@@ -328,6 +328,18 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%;bac
       <div class="slider"><input type="range" id="setVol" min="0" max="100" step="5"><span class="val" id="valVol"></span></div></div>
     <div class="field"><label for="setCount">Countdown before the take</label>
       <div class="slider"><input type="range" id="setCount" min="0" max="8" step="1"><span class="val" id="valCount"></span></div></div>
+
+    <h2 class="sec" style="margin-top:34px">Across devices</h2>
+    <div class="field"><label for="setSync">Keep devices in step</label>
+      <button class="sw" id="setSync" aria-pressed="false" aria-label="Sync across devices"></button></div>
+    <div class="field" data-sync><label for="setCode">Sync code</label>
+      <div class="slider"><input type="text" id="setCode" placeholder="type the code from your other device" autocapitalize="off" autocorrect="off" spellcheck="false"
+        style="flex:1;background:var(--pit);border:1px solid var(--edge);border-radius:2px;padding:8px 10px;font-family:var(--mono);font-size:12px">
+        <button class="btn ghost" id="newCode">New</button></div></div>
+    <div class="field" data-sync><label>Status</label>
+      <div class="slider"><span class="val" id="syncNote" style="text-align:left;min-width:auto;color:var(--bone-dim);font-family:var(--ui);font-size:13px"></span>
+        <button class="btn ghost" id="syncNow" style="margin-left:auto">Sync now</button></div></div>
+    <p class="hint" data-sync style="margin:6px 0 0;max-width:60ch">Anyone who has this code can read your scripts and your ElevenLabs key. It is a shared secret, not a login. Nothing syncs while a take is running.</p>
   </section>
 </div>
 
@@ -383,6 +395,136 @@ const Store = (()=>{
     }
   };
 })();
+
+/* ============================================================
+   sync — optional, never blocking, never during a take
+
+   The state table is unreachable with this key; the only doors are the two
+   RPCs below, and both demand the sync code. The audio bucket is public to
+   read but cannot be listed, so paths keyed by the code stay private.
+   Every call here resolves - a sync failure must never cost a take.
+   ============================================================ */
+const SUPA_URL = 'https://goyuyxbzllrqkwicknro.supabase.co';
+const SUPA_KEY = 'sb_publishable_w05D5w7A2pa7Y2jp26CCMw_LkIvIyXV';
+const SUPA_BUCKET = 'sides-audio';
+const CODE_ALPHA  = 'abcdefghijkmnpqrstuvwxyz23456789';  // no o/l/0/1 - this gets typed on an iPad
+
+function newSyncCode(){
+  const n = 20; let b;
+  try{ b = crypto.getRandomValues(new Uint8Array(n)); }
+  catch(e){ b = Array.from({length:n}, ()=>Math.floor(Math.random()*256)); }
+  let out = '';
+  for(let i=0;i<n;i++) out += CODE_ALPHA[b[i] % CODE_ALPHA.length];   // 32 divides 256: no bias
+  return out.replace(/(.{5})(?=.)/g, '$1-');
+}
+function tidyCode(s){ return String(s||'').toLowerCase().replace(/[^a-z0-9-]/g,''); }
+
+const Sync = {
+  code:'', on:false, lastTs:null, dirty:false, hold:false, busy:false, timer:null, last:null, note:'',
+
+  ready(){ return !!(this.on && this.code); },
+  /* design rule 1: the take is fully local */
+  blocked(){ return typeof P !== 'undefined' && P.on; },
+  say(m){ this.note = m; try{ syncNote(); }catch(e){} },
+
+  async rpc(fn, body, ms=8000){
+    let ctl=null, t=null;
+    try{ ctl = new AbortController(); }catch(e){}
+    if(ctl) t = setTimeout(()=>{ try{ ctl.abort(); }catch(e){} }, ms);
+    try{
+      const r = await fetch(`${SUPA_URL}/rest/v1/rpc/${fn}`, {
+        method:'POST', signal: ctl ? ctl.signal : undefined,
+        headers:{ apikey:SUPA_KEY, Authorization:`Bearer ${SUPA_KEY}`, 'Content-Type':'application/json' },
+        body: JSON.stringify(body)
+      });
+      if(!r || !r.ok) return { ok:false, status:r && r.status };
+      return { ok:true, data: await r.json() };
+    }catch(e){ return { ok:false, error: e && e.message }; }
+    finally{ if(t) clearTimeout(t); }
+  },
+
+  /* called by save() with the blob it just wrote locally - one serialisation, not two */
+  mark(blob){
+    this.last = blob;
+    if(!this.ready() || this.hold) return;
+    this.dirty = true;
+    clearTimeout(this.timer);
+    this.timer = setTimeout(()=>{ this.push(); }, 1500);
+  },
+
+  async push(){
+    if(!this.ready() || this.blocked() || this.busy || this.hold) return false;
+    const blob = this.last || stateBlob();
+    this.busy = true;
+    const r = await this.rpc('sync_push', { p_code:this.code, p_blob:blob });
+    this.busy = false;
+    if(r.ok){ this.lastTs = r.data; this.dirty = false; this.say('everything saved'); return true; }
+    this.say('offline — saved on this device');
+    return false;
+  },
+
+  async pull(){
+    if(!this.ready() || this.blocked() || this.busy) return false;
+    this.busy = true;
+    const r = await this.rpc('sync_pull', { p_code:this.code });
+    this.busy = false;
+    if(!r.ok){ this.say('offline — using this device'); return false; }
+    const row = Array.isArray(r.data) ? r.data[0] : null;
+    if(!row){ this.say('nothing stored under this code yet'); return false; }
+    if(row.updated_at === this.lastTs){ this.say('up to date'); return false; }
+    if(this.dirty && !this.hold){ this.say('this device is ahead — sending'); this.push(); return false; }
+    try{ applyState(row.blob); }catch(e){ this.say('could not read what was stored'); return false; }
+    this.lastTs = row.updated_at;
+    this.dirty = false;
+    try{ renderLib(); refresh(); refreshSettingsUI(); }catch(e){}
+    this.say('updated from your other device');
+    return true;
+  },
+
+  /* adopting a code from device 1: pull first, and suppress any push until it lands,
+     so an empty second device can never overwrite the first */
+  async adopt(code){
+    this.code = tidyCode(code);
+    this.lastTs = null; this.dirty = false;
+    clearTimeout(this.timer);
+    this.hold = true;
+    this.say('looking for your other device…');
+    const got = await this.pull();
+    this.hold = false;
+    if(!got && this.code) this.push();     // nothing there yet: this device seeds it
+    await this.persist();
+    return got;
+  },
+
+  clipPath(k){ return `${encodeURIComponent(this.code)}/${encodeURIComponent(k)}.mp3`; },
+  async getClip(k){
+    if(!this.ready() || this.blocked()) return null;
+    try{
+      const r = await fetch(`${SUPA_URL}/storage/v1/object/public/${SUPA_BUCKET}/${this.clipPath(k)}`);
+      if(!r || !r.ok) return null;
+      const buf = await r.arrayBuffer();
+      return (buf && buf.byteLength) ? buf : null;
+    }catch(e){ return null; }
+  },
+  async putClip(k, buf){
+    if(!this.ready() || this.blocked()) return false;
+    try{
+      const r = await fetch(`${SUPA_URL}/storage/v1/object/${SUPA_BUCKET}/${this.clipPath(k)}`, {
+        method:'POST', body:buf,
+        headers:{ apikey:SUPA_KEY, Authorization:`Bearer ${SUPA_KEY}`, 'Content-Type':'audio/mpeg' }
+      });
+      return !!(r && (r.ok || r.status === 409));   // 409 = the same clip is already up there
+    }catch(e){ return false; }
+  },
+
+  async persist(){ await Store.set('sides:sync', { code:this.code, on:this.on }); },
+  async boot(){
+    const d = await Store.get('sides:sync');
+    if(d){ this.code = tidyCode(d.code); this.on = !!d.on; }
+    this.say(this.ready() ? 'checking…' : 'off');
+    if(this.ready()) this.pull();          // deliberately not awaited: startup must not wait on a network
+  }
+};
 
 const DEFAULTS = { mode:'cue', silence:1600, sens:5, speed:46, font:52, focus:38,
   mirror:false, names:true, dirs:true, engine:'system', elKey:'', rate:100, vol:85, count:3, device:'' };
@@ -1227,6 +1369,37 @@ function cacheNote(){
   const el=$('#cacheNote');
   if(el) el.textContent = n ? `${n} lines held on this device — reused free` : 'Nothing stored yet';
 }
+function syncNote(){
+  const el=$('#syncNote');
+  if(el) el.textContent = Sync.note || (Sync.ready() ? 'on' : 'off');
+}
+$('#setSync').addEventListener('click', async ()=>{
+  Sync.on = !Sync.on;
+  if(Sync.on && !Sync.code) Sync.code = newSyncCode();
+  refreshSettingsUI();
+  await Sync.persist();
+  if(!Sync.ready()){ Sync.say('off'); return; }
+  Sync.say('checking…');
+  if(!(await Sync.pull())) Sync.push();          // nothing up there yet: seed it from here
+});
+$('#newCode').addEventListener('click', async ()=>{
+  Sync.code = newSyncCode(); Sync.lastTs = null; Sync.dirty = true;
+  refreshSettingsUI(); await Sync.persist(); Sync.push();
+  toast('New code. Type it into your other device to pair them.', 5200);
+});
+$('#setCode').addEventListener('change', async ()=>{
+  const c = tidyCode($('#setCode').value);
+  if(c === Sync.code) return;
+  if(c.length < 12){ refreshSettingsUI(); return toast('That code looks too short — check it against the other device.', 4500); }
+  await Sync.adopt(c);
+  refreshSettingsUI();
+});
+$('#syncNow').addEventListener('click', async ()=>{
+  if(!Sync.ready()) return toast('Turn sync on first.');
+  await Sync.pull();
+  if(Sync.dirty) await Sync.push();
+});
+
 const SWITCHES={setMirror:'mirror',setNames:'names',setDirs:'dirs'};
 Object.keys(SWITCHES).forEach(id=>$('#'+id).addEventListener('click',()=>{
   const b=$('#'+id), on=b.getAttribute('aria-pressed')==='true';
@@ -1245,6 +1418,10 @@ function refreshSettingsUI(){
   $('#setEngine').value = S.set.engine;
   $('#setKey').value = S.set.elKey || '';
   $$('[data-el]').forEach(f=>{ f.style.display = S.set.engine==='elevenlabs' ? '' : 'none'; });
+  $('#setSync').setAttribute('aria-pressed', Sync.on ? 'true' : 'false');
+  $('#setCode').value = Sync.code || '';
+  $$('[data-sync]').forEach(f=>{ f.style.display = Sync.on ? '' : 'none'; });
+  syncNote();
   cacheNote();
 }
 async function listDevices(){
@@ -1264,8 +1441,13 @@ async function ensureClip(voiceId, text){
   if(!clean || !voiceId) return false;
   const k = clipKey(voiceId, clean);
   if(await AudioCache.get(k)) return true;
+  /* local -> the bucket -> pay for it. clipKey is a content address, so a clip
+     the other device already generated is byte-for-byte the one we want. */
+  const had = await Sync.getClip(k);
+  if(had){ await AudioCache.put(k, had); return true; }
   const buf = await EL.synth(S.set.elKey, voiceId, clean);
   await AudioCache.put(k, buf);
+  Sync.putClip(k, buf);      // deliberately not awaited - an upload must not hold up a take
   return true;
 }
 
@@ -1869,18 +2051,27 @@ let saveTimer;
 window.addEventListener('resize', resizeAll);
 document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) resizeAll(); });
 
+/* picking the iPad up is the whole point: check for newer work whenever the app
+   comes back to the front. Sync.pull() no-ops during a take and when offline. */
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) Sync.pull(); });
+window.addEventListener('focus', ()=>{ Sync.pull(); });
+
+/* the one serialisation of everything - local storage and sync both use it */
+function stateBlob(){
+  return {
+    segs:S.segs.map(s=>({...s})), cast:S.cast, set:S.set, name:S.name,
+    scripts:S.scripts, paste:$('#paste').value
+  };
+}
 function save(){
   clearTimeout(saveTimer);
   saveTimer=setTimeout(()=>{
-    Store.set('sides:v2',{
-      segs:S.segs.map(s=>({...s})), cast:S.cast, set:S.set, name:S.name,
-      scripts:S.scripts, paste:$('#paste').value
-    });
+    const blob = stateBlob();
+    Store.set('sides:v2', blob);
+    Sync.mark(blob);
   },400);
 }
-async function boot(){
-  S.voices=await loadVoices();
-  const d=await Store.get('sides:v2');
+function applyState(d){
   if(d){
     S.set={...DEFAULTS,...(d.set||{})};
     S.scripts=d.scripts||[]; S.name=d.name||'';
@@ -1892,6 +2083,11 @@ async function boot(){
       renderPages();
     }
   }
+}
+async function boot(){
+  S.voices=await loadVoices();
+  applyState(await Store.get('sides:v2'));
+  await Sync.boot();
   renderLib(); refresh(); refreshSettingsUI(); listDevices();
   navigator.mediaDevices?.addEventListener?.('devicechange', listDevices);
 }
