@@ -1100,8 +1100,10 @@ const Reader = {
         this.cur = null;
         res({ ok, expect });
       };
+      // absolute ceiling, armed before anything speaks. Tight enough that a
+      // wedged engine costs a beat rather than a dead scene.
       const hard = setTimeout(()=>{ try{ speechSynthesis.cancel(); }catch(e){} done(false); },
-                              expect + 8000);
+                              expect * 1.4 + 2600);
 
       const go = ()=>{
         if(settled) return;
@@ -1429,6 +1431,20 @@ async function advanceInto(i){
   }
 }
 
+/* Pure decision, no DOM and no timers, so it can be driven directly by tests.
+   Returns the reason for advancing, or null to keep waiting. */
+function advanceDecision(st, now, silence){
+  if(!st || !st.spoke) return null;
+  if(now - st.t0 < 2200) return null;            // never move within 2.2s of showing a line
+  const spoken = st.lastLoud - st.spokeAt;
+  const quiet  = st.quietSince ? (now - st.quietSince) : 0;
+  if(quiet >= Math.max(2800, silence * 1.6)) return 'silence';       // ignores the estimate
+  if(quiet < silence) return null;
+  if(spoken >= st.expected * 0.90) return 'spoken';
+  if(now - st.spokeAt >= st.expected * 1.25) return 'elapsed';
+  return null;
+}
+
 function cueLoop(){
   if(!P.on) return;
   P.raf = requestAnimationFrame(cueLoop);
@@ -1471,18 +1487,10 @@ function cueLoop(){
 
   // measure from the first word, not from when the line appeared - a beat
   // before starting used to eat the whole budget
-  const spoken = st.spoke ? (st.lastLoud - st.spokeAt) : 0;
-  const quiet  = st.quietSince ? (now - st.quietSince) : 0;
-  const floor  = now - st.t0 >= 2200;         // never move within 2.2s of showing a line
-
-  // three independent ways out, so no single bad estimate can strand a line
-  const done     = quiet >= S.set.silence && spoken >= st.expected * 0.90;
-  const slowDone = quiet >= S.set.silence && (now - st.spokeAt) >= st.expected * 1.25;
-  const hardDone = quiet >= Math.max(2800, S.set.silence * 1.6);   // ignores the model entirely
 
   if(!st.spoke && now - st.t0 > 7000) setStatus('listening', 'Waiting for you — space to move on');
 
-  if(st.spoke && floor && (done || slowDone || hardDone)){
+  if(advanceDecision(st, now, S.set.silence)){
     learnPace(st);
     if(P.idx >= P.cues.length-1) return finish();
     advanceInto(P.idx+1);
