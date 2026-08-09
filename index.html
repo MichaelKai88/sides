@@ -310,6 +310,18 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%;bac
       <button class="sw" id="setDirs" aria-pressed="true" aria-label="Show stage directions"></button></div>
 
     <h2 class="sec" style="margin-top:34px">The reader</h2>
+    <div class="field"><label for="setEngine">Voice</label>
+      <select id="setEngine">
+        <option value="system">This device's built-in voices — free, offline</option>
+        <option value="elevenlabs">ElevenLabs — studio quality, needs a key</option>
+      </select></div>
+    <div class="field" data-el><label for="setKey">ElevenLabs API key</label>
+      <div class="slider"><input type="password" id="setKey" placeholder="sk_…"
+        style="flex:1;background:var(--pit);border:1px solid var(--edge);border-radius:2px;padding:8px 10px;font-family:var(--mono);font-size:12px">
+        <button class="btn ghost" id="checkKey">Check</button></div></div>
+    <div class="field" data-el><label>Stored audio</label>
+      <div class="slider"><span class="val" id="cacheNote" style="text-align:left;min-width:auto;color:var(--bone-dim);font-family:var(--ui);font-size:13px"></span>
+        <button class="btn ghost danger" id="clearCache" style="margin-left:auto">Clear it</button></div></div>
     <div class="field"><label for="setRate">Reader pace</label>
       <div class="slider"><input type="range" id="setRate" min="60" max="140" step="5"><span class="val" id="valRate"></span></div></div>
     <div class="field"><label for="setVol">Reader volume</label>
@@ -321,7 +333,7 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%;bac
 
 <div id="launch"><div class="inner">
   <span id="launchNote">Bring in a script to begin.</span>
-  <button class="btn" id="btnNext">Next</button>
+  <button class="btn" id="btnNext">Setup</button>
   <button class="btn primary" id="btnRun" disabled>Start the take</button>
 </div></div>
 
@@ -373,8 +385,8 @@ const Store = (()=>{
 })();
 
 const DEFAULTS = { mode:'cue', silence:1600, sens:5, speed:46, font:52, focus:38,
-  mirror:false, names:true, dirs:true, rate:100, vol:85, count:3, device:'' };
-const S = { segs:[], cast:{}, set:{...DEFAULTS}, voices:[], step:0, pages:[], scripts:[], name:'', showTrim:false, fileHint:'' };
+  mirror:false, names:true, dirs:true, engine:'system', elKey:'', rate:100, vol:85, count:3, device:'' };
+const S = { segs:[], cast:{}, set:{...DEFAULTS}, voices:[], step:0, pages:[], scripts:[], name:'', showTrim:false, fileHint:'', elVoices:[] };
 let SEQ = 1;
 
 const $  = s => document.querySelector(s);
@@ -382,6 +394,144 @@ const $$ = s => Array.from(document.querySelectorAll(s));
 function toast(m, ms=2800){ const t=$('#toast'); t.textContent=m; t.classList.add('on');
   clearTimeout(t._x); t._x=setTimeout(()=>t.classList.remove('on'), ms); }
 function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+/* ============================================================
+   ELEVENLABS — studio voices, generated before the take, never during
+   ============================================================ */
+
+const EL_API   = 'https://api.elevenlabs.io/v1';
+const EL_MODEL = 'eleven_multilingual_v2';
+
+function hashKey(s){
+  let h = 0x811c9dc5;
+  for(let i=0;i<s.length;i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(16) + '_' + s.length;
+}
+
+/* ---------- audio cache (survives reloads, so nothing is paid for twice) ---------- */
+const AudioCache = {
+  db:null, mem:new Map(),
+  async open(){
+    if(this.db !== null) return this.db;
+    this.db = await new Promise(res=>{
+      try{
+        const r = indexedDB.open('sides-audio', 1);
+        r.onupgradeneeded = ()=>{ if(!r.result.objectStoreNames.contains('clips')) r.result.createObjectStore('clips'); };
+        r.onsuccess = ()=>res(r.result);
+        r.onerror   = ()=>res(false);
+        setTimeout(()=>res(false), 3000);
+      }catch(e){ res(false); }
+    });
+    return this.db;
+  },
+  async get(k){
+    if(this.mem.has(k)) return this.mem.get(k);
+    const db = await this.open(); if(!db) return null;
+    const buf = await new Promise(res=>{
+      try{
+        const rq = db.transaction('clips','readonly').objectStore('clips').get(k);
+        rq.onsuccess = ()=>res(rq.result || null); rq.onerror = ()=>res(null);
+      }catch(e){ res(null); }
+    });
+    if(buf) this.mem.set(k, buf);
+    return buf;
+  },
+  async put(k, buf){
+    this.mem.set(k, buf);
+    const db = await this.open(); if(!db) return;
+    try{ db.transaction('clips','readwrite').objectStore('clips').put(buf, k); }catch(e){}
+  },
+  async clear(){
+    this.mem.clear();
+    const db = await this.open(); if(!db) return;
+    try{ db.transaction('clips','readwrite').objectStore('clips').clear(); }catch(e){}
+  }
+};
+
+/* ---------- API ---------- */
+const EL = {
+  voices:[],
+  async listVoices(key){
+    const r = await fetch(`${EL_API}/voices`, { headers:{ 'xi-api-key': key } });
+    if(!r.ok) throw new Error(r.status === 401 ? 'That key was rejected.' : `ElevenLabs returned ${r.status}.`);
+    const j = await r.json();
+    this.voices = (j.voices||[]).map(v=>({
+      voiceURI: v.voice_id, name: v.name,
+      lang: [v.labels?.accent, v.labels?.gender, v.labels?.age].filter(Boolean).join(', ') || 'voice'
+    }));
+    return this.voices;
+  },
+  async synth(key, voiceId, text){
+    const r = await fetch(`${EL_API}/text-to-speech/${voiceId}`, {
+      method:'POST',
+      headers:{ 'xi-api-key': key, 'Content-Type':'application/json', 'Accept':'audio/mpeg' },
+      body: JSON.stringify({ text, model_id: EL_MODEL,
+                             voice_settings:{ stability:0.45, similarity_boost:0.8, style:0.15 } })
+    });
+    if(!r.ok){
+      let msg = `ElevenLabs returned ${r.status}`;
+      if(r.status === 401) msg = 'Key rejected';
+      if(r.status === 422) msg = 'That line was refused';
+      if(r.status === 429) msg = 'Rate limited — try again shortly';
+      throw new Error(msg);
+    }
+    return await r.arrayBuffer();
+  }
+};
+
+function clipKey(voiceId, text){
+  return hashKey(`${EL_MODEL}|${voiceId}|${String(text).trim()}`);
+}
+
+/* ---------- player: one element, unlocked at take start, always resolves ---------- */
+const Clip = {
+  el:null, url:null,
+  unlock(){
+    if(!this.el){
+      this.el = new Audio();
+      this.el.preload = 'auto';
+      this.el.playsInline = true;
+    }
+    // iOS only permits playback started from a gesture; this runs on Start
+    try{ this.el.muted = true; this.el.play().then(()=>{ this.el.pause(); this.el.muted=false; }).catch(()=>{ this.el.muted=false; }); }
+    catch(e){ this.el.muted = false; }
+  },
+  stop(){
+    try{ this.el && this.el.pause(); }catch(e){}
+    if(this.url){ try{ URL.revokeObjectURL(this.url); }catch(e){} this.url = null; }
+  },
+  play(buf, volume){
+    return new Promise(res=>{
+      if(!buf || !this.el) return res({ ok:false, expect:0 });
+      let settled = false;
+      let hard = null;
+      const done = ok => {
+        if(settled) return; settled = true;
+        clearTimeout(hard);
+        this.el.onended = this.el.onerror = this.el.onloadedmetadata = null;
+        res({ ok, expect: 0 });
+      };
+      try{
+        this.stop();
+        this.url = URL.createObjectURL(new Blob([buf], { type:'audio/mpeg' }));
+        this.el.src = this.url;
+        this.el.volume = Math.max(0, Math.min(1, volume));
+        this.el.onended = ()=>done(true);
+        this.el.onerror = ()=>done(false);
+        // ceiling is set from the real duration once known, with a floor for
+        // the case where metadata never arrives
+        hard = setTimeout(()=>done(false), 20000);
+        this.el.onloadedmetadata = ()=>{
+          const d = this.el.duration;
+          if(isFinite(d) && d > 0){ clearTimeout(hard); hard = setTimeout(()=>done(false), d*1000 + 2500); }
+        };
+        const p = this.el.play();
+        if(p && p.catch) p.catch(()=>done(false));
+      }catch(e){ done(false); }
+    });
+  }
+};
+
 
 /* ============================================================
    INGEST — PDF and text into speaker-attributed segments
@@ -695,7 +845,10 @@ function loadVoices(){
     const iv=setInterval(check,120); speechSynthesis.onvoiceschanged=check; check();
   });
 }
-function englishVoices(){ const en=S.voices.filter(v=>/^en/i.test(v.lang)); return en.length?en:S.voices; }
+function englishVoices(){
+  if(S.set.engine==='elevenlabs' && S.elVoices.length) return S.elVoices;
+  const en=S.voices.filter(v=>/^en/i.test(v.lang)); return en.length?en:S.voices;
+}
 
 /* ============================================================
    editor
@@ -845,8 +998,16 @@ function renderCast(){
         if(c.voice===v.voiceURI) o.selected=true; sel.appendChild(o); });
       sel.addEventListener('change',()=>{ c.voice=sel.value; save(); });
       const test=document.createElement('button'); test.className='btn ghost'; test.textContent='Hear it';
-      test.addEventListener('click',()=>{ const l=S.segs.find(s=>s.speaker===name&&s.kind==='line'&&!s.out);
-        Reader.say(l?l.text:`This is ${name}.`, c.voice); });
+      test.addEventListener('click', async ()=>{
+        const l=S.segs.find(s=>s.speaker===name&&s.kind==='line'&&!s.out);
+        const line = l?l.text:`This is ${name}.`;
+        if(S.set.engine==='elevenlabs'){
+          test.textContent='…';
+          try{ await ensureClip(c.voice, line); }catch(e){ toast(e.message,4500); }
+          test.textContent='Hear it';
+        }
+        Clip.unlock(); Reader.say(line, c.voice);
+      });
       extra.append(lab,sel,test);
     }
     const others=list.map(x=>x[0]).filter(n=>n!==name);
@@ -868,9 +1029,13 @@ function renderCast(){
     box.appendChild(card);
   });
   const n=englishVoices().length;
-  $('#voiceNote').textContent = n
-    ? `${n} voices on this device — your system's own, so they're free, offline and instant.`
-    : 'No speech voices found. The prompter still runs; the reader will be silent.';
+  $('#voiceNote').textContent =
+    S.set.engine==='elevenlabs'
+      ? (S.elVoices.length
+          ? `${S.elVoices.length} ElevenLabs voices. Lines are generated once before the take and kept on this device, so a rerun costs nothing.`
+          : 'Add your ElevenLabs key under Setup, then press Check to load the voices.')
+      : (n ? `${n} voices on this device — your system's own, so free, offline and instant.`
+           : 'No speech voices found. The prompter still runs; the reader will be silent.');
 }
 
 function refresh(){ syncCast(); renderLines(); renderCast(); updateLaunch(); save(); }
@@ -993,11 +1158,12 @@ function goStep(n){
   updateLaunch(); window.scrollTo({top:0,behavior:'smooth'});
 }
 $$('.step').forEach(b=>b.addEventListener('click',()=>{
-  if(+b.dataset.step>0 && !S.segs.length) return toast('Bring in a script first.');
+  // Cast needs a script; Setup is global and always reachable
+  if(+b.dataset.step===1 && !S.segs.length) return toast('Cast needs a script. Setup is open any time.');
   goStep(+b.dataset.step);
 }));
 $('#btnNext').addEventListener('click',()=>{
-  if(!S.segs.length) return toast('Bring in a script first.');
+  if(!S.segs.length) return goStep(2);          // straight to Setup with nothing loaded
   goStep(Math.min(2,S.step+1));
 });
 
@@ -1006,8 +1172,9 @@ function updateLaunch(){
   const hasMe=Object.values(S.cast).some(c=>c.role==='me');
   $('#btnRun').disabled=!has;
   $('#btnNext').style.display=S.step<2?'':'none';
+  $('#btnNext').textContent = S.segs.length ? 'Next' : 'Setup';
   let note='';
-  if(!has) note='Bring in a script to begin.';
+  if(!has) note='Bring in a script to begin — or set your preferences under Setup.';
   else if(!hasMe) note='No character is marked as you — every line will be read aloud.';
   else{
     const mine=S.segs.filter(s=>s.kind==='line'&&!s.out&&S.cast[s.speaker]?.role==='me').length;
@@ -1036,6 +1203,30 @@ settingBind.forEach(([sel,key,valSel,fmt])=>{
 });
 $('#setMode').addEventListener('change',()=>{ S.set.mode=$('#setMode').value; refreshSettingsUI(); save(); });
 $('#setDevice').addEventListener('change',()=>{ S.set.device=$('#setDevice').value; save(); });
+$('#setEngine').addEventListener('change',()=>{
+  S.set.engine=$('#setEngine').value; refreshSettingsUI(); renderCast(); save();
+  if(S.set.engine==='elevenlabs' && !S.elVoices.length && S.set.elKey) checkKey();
+});
+$('#setKey').addEventListener('change',()=>{ S.set.elKey=$('#setKey').value.trim(); save(); });
+$('#checkKey').addEventListener('click', checkKey);
+$('#clearCache').addEventListener('click', async ()=>{
+  await AudioCache.clear(); cacheNote(); toast('Stored reader audio cleared.');
+});
+async function checkKey(){
+  const key=$('#setKey').value.trim(); S.set.elKey=key; save();
+  if(!key) return toast('Paste your ElevenLabs key first.');
+  toast('Checking the key…');
+  try{
+    const v=await EL.listVoices(key); S.elVoices=v;
+    toast(`Key works — ${v.length} voices available.`); renderCast();
+  }catch(e){ toast(e.message.includes('Failed to fetch')
+      ? 'Could not reach ElevenLabs. Check your connection.' : e.message, 5000); }
+}
+function cacheNote(){
+  const n=AudioCache.mem.size;
+  const el=$('#cacheNote');
+  if(el) el.textContent = n ? `${n} lines held on this device — reused free` : 'Nothing stored yet';
+}
 const SWITCHES={setMirror:'mirror',setNames:'names',setDirs:'dirs'};
 Object.keys(SWITCHES).forEach(id=>$('#'+id).addEventListener('click',()=>{
   const b=$('#'+id), on=b.getAttribute('aria-pressed')==='true';
@@ -1051,6 +1242,10 @@ function refreshSettingsUI(){
   $('#setNames').setAttribute('aria-pressed',S.set.names?'true':'false');
   $('#setDirs').setAttribute('aria-pressed',S.set.dirs?'true':'false');
   $$('[data-only]').forEach(f=>{ f.style.display = f.dataset.only===S.set.mode ? '' : 'none'; });
+  $('#setEngine').value = S.set.engine;
+  $('#setKey').value = S.set.elKey || '';
+  $$('[data-el]').forEach(f=>{ f.style.display = S.set.engine==='elevenlabs' ? '' : 'none'; });
+  cacheNote();
 }
 async function listDevices(){
   try{
@@ -1062,8 +1257,53 @@ async function listDevices(){
     });
   }catch(e){}
 }
+function readerText(t){ return String(t||'').replace(/\([^)]*\)/g,' ').replace(/\s+/g,' ').trim(); }
+
+async function ensureClip(voiceId, text){
+  const clean = readerText(text);
+  if(!clean || !voiceId) return false;
+  const k = clipKey(voiceId, clean);
+  if(await AudioCache.get(k)) return true;
+  const buf = await EL.synth(S.set.elKey, voiceId, clean);
+  await AudioCache.put(k, buf);
+  return true;
+}
+
+/* Everything the reader will say is generated up front. During the take there
+   is no network call at all - playback is a local audio file. */
+async function prepareReader(){
+  const lines = S.segs.filter(s=>s.kind==='line' && !s.out && S.cast[s.speaker]?.role==='reader');
+  if(!lines.length) return true;
+  if(!S.set.elKey){ toast('Add your ElevenLabs key under Setup first.', 4500); goStep(2); return false; }
+
+  const todo = [];
+  for(const l of lines){
+    const v = S.cast[l.speaker]?.voice; if(!v) continue;
+    const clean = readerText(l.text); if(!clean) continue;
+    if(!(await AudioCache.get(clipKey(v, clean)))) todo.push({ v, clean });
+  }
+  if(!todo.length){ cacheNote(); return true; }
+
+  const btn=$('#btnRun'), note=$('#launchNote'), was=btn.textContent;
+  btn.disabled=true;
+  for(let i=0;i<todo.length;i++){
+    note.textContent = `Preparing the reader — ${i+1} of ${todo.length}`;
+    btn.textContent = 'Preparing…';
+    try{ await ensureClip(todo[i].v, todo[i].clean); }
+    catch(e){
+      btn.disabled=false; btn.textContent=was; updateLaunch();
+      toast(`${e.message}. The take will use this device's voices instead.`, 6000);
+      return true;   // never block a take over the reader
+    }
+  }
+  btn.disabled=false; btn.textContent=was; updateLaunch(); cacheNote();
+  return true;
+}
+
 $('#btnRun').addEventListener('click', async ()=>{
   if(!S.segs.some(s=>s.kind==='line'&&!s.out)) return;
+  Clip.unlock();                       // must happen inside the click for iOS
+  if(S.set.engine==='elevenlabs'){ if(!(await prepareReader())) return; }
   await startPrompter();
 });
 
@@ -1073,17 +1313,32 @@ $('#btnRun').addEventListener('click', async ()=>{
 const Reader = {
   cur:null, nudge:null, warned:false,
   warm(){
+    try{ Clip.unlock(); }catch(e){}
     if(!('speechSynthesis' in window)) return;
     try{ speechSynthesis.cancel(); if(speechSynthesis.paused) speechSynthesis.resume(); }catch(e){}
   },
   stop(){
     clearInterval(this.nudge); this.nudge=null;
     try{ speechSynthesis.cancel(); }catch(e){}
+    try{ Clip.stop(); }catch(e){}
     this.cur=null;
   },
   /* Resolves {ok} ALWAYS. A hard ceiling is armed before we attempt to speak,
      so no failure mode inside the speech engine can leave the take stalled. */
-  say(text, voiceURI){
+  async say(text, voiceURI){
+    // a pre-generated clip is just an audio file - none of the speech engine's
+    // failure modes exist on this path
+    if(S.set.engine === 'elevenlabs' && voiceURI){
+      const buf = await AudioCache.get(clipKey(voiceURI, String(text||'').replace(/\([^)]*\)/g,' ').replace(/\s+/g,' ').trim()));
+      if(buf){
+        const r = await Clip.play(buf, S.set.vol/100);
+        if(r.ok) return r;
+        // fall through to the system voice rather than losing the line
+      }
+    }
+    return this.sayWithSpeech(text, voiceURI);
+  },
+  sayWithSpeech(text, voiceURI){
     const clean = String(text||'').replace(/\([^)]*\)/g,' ').replace(/\s+/g,' ').trim();
     const rate  = S.set.rate/100;
     const words = clean ? clean.split(/\s+/).length : 0;
