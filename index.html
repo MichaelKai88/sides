@@ -513,7 +513,14 @@ const Sync = {
         method:'POST', body:buf,
         headers:{ apikey:SUPA_KEY, Authorization:`Bearer ${SUPA_KEY}`, 'Content-Type':'audio/mpeg' }
       });
-      return !!(r && (r.ok || r.status === 409));   // 409 = the same clip is already up there
+      if(r && r.ok) return true;
+      /* Storage answers 400 with a KeyAlreadyExists body when the object exists.
+         clipKey is a content address, so "already there" is the same as success. */
+      try{
+        const j = await r.json();
+        if(j && (j.statusCode === '409' || j.error === 'Duplicate' || j.code === 'KeyAlreadyExists')) return true;
+      }catch(e){}
+      return false;
     }catch(e){ return false; }
   },
 
@@ -1447,7 +1454,9 @@ async function ensureClip(voiceId, text){
   if(had){ await AudioCache.put(k, had); return true; }
   const buf = await EL.synth(S.set.elKey, voiceId, clean);
   await AudioCache.put(k, buf);
-  Sync.putClip(k, buf);      // deliberately not awaited - an upload must not hold up a take
+  // deliberately not awaited - an upload must not hold up a take - and never
+  // allowed to reject: an unhandled rejection here would surface mid-preparation
+  Promise.resolve(Sync.putClip(k, buf)).catch(()=>{});
   return true;
 }
 

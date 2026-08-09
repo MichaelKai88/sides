@@ -68,7 +68,7 @@ const html = fs.readFileSync('./index.html','utf8');
 const js   = html.slice(html.indexOf('<script>')+8, html.lastIndexOf('</script>'));
 vm.createContext(sandbox);
 new vm.Script(js + '\n;globalThis.__T={Reader,advanceDecision,newCueState,S,P,segsFromText,mergedView,Clip,AudioCache,clipKey,'
-                 + 'Sync,stateBlob,applyState,newSyncCode,tidyCode,ensureClip};')
+                 + 'Sync,stateBlob,applyState,newSyncCode,tidyCode,ensureClip,EL};')
   .runInContext(sandbox);
 const T = sandbox.__T;
 
@@ -202,6 +202,55 @@ console.log('\nSYNC — never blocks a take, never throws, never loses local wor
   ok('an unreachable clip reads null', (await T.Sync.getClip('nope')) === null);
   ok('a failed upload reads false',    (await T.Sync.putClip('nope', new ArrayBuffer(4))) === false);
   ok('the clip path is namespaced by the code', T.Sync.clipPath('abc') === 'abcde-fghij-klmno-pqrst/abc.mp3');
+
+  /* Storage reports a duplicate as HTTP 400 with a 409 in the body - the real
+     shape, captured from the live project, not what the docs imply */
+  const realFetch = sandbox.fetch;
+  sandbox.fetch = async()=>({ ok:false, status:400,
+    json: async()=>({ statusCode:'409', error:'Duplicate', message:'The resource already exists', code:'KeyAlreadyExists' }) });
+  ok('a clip already in the bucket counts as uploaded',
+     (await T.Sync.putClip('dupe', new ArrayBuffer(4))) === true);
+  sandbox.fetch = async()=>({ ok:false, status:400, json: async()=>({ error:'Payload too large' }) });
+  ok('a genuinely rejected upload still reads false',
+     (await T.Sync.putClip('big', new ArrayBuffer(4))) === false);
+  sandbox.fetch = realFetch;
+}
+
+console.log('\nCLIP RESOLUTION — the order that decides whether a line is paid for twice');
+{
+  const realCacheGet = T.AudioCache.get, realCachePut = T.AudioCache.put;
+  const realRemoteGet = T.Sync.getClip, realRemotePut = T.Sync.putClip, realSynth = T.EL.synth;
+  let local = null, remote = null, calls = [];
+  T.AudioCache.get = async ()  => { calls.push('local');  return local; };
+  T.AudioCache.put = async (k,b)=>{ calls.push('cache');  local = b; };
+  T.Sync.getClip   = async ()  => { calls.push('remote'); return remote; };
+  T.Sync.putClip   = async ()  => { calls.push('upload'); return true; };
+  T.EL.synth       = async ()  => { calls.push('PAID');   return new ArrayBuffer(16); };
+  T.Sync.on = true; T.Sync.code = 'abcde-fghij-klmno-pqrst'; T.P.on = false;
+
+  calls = []; local = new ArrayBuffer(8); remote = null;
+  await T.ensureClip('v1','A line already on this device.');
+  ok('cached locally: nothing else is touched', calls.join(',') === 'local');
+
+  calls = []; local = null; remote = new ArrayBuffer(8);
+  await T.ensureClip('v1','A line the other device already made.');
+  ok('in the bucket: downloaded, NOT regenerated', calls.join(',') === 'local,remote,cache');
+  ok('...and ElevenLabs was never called', calls.indexOf('PAID') === -1);
+
+  calls = []; local = null; remote = null;
+  await T.ensureClip('v1','A line nobody has made yet.');
+  ok('nowhere yet: generated once, then shared', calls.join(',') === 'local,remote,PAID,cache,upload');
+
+  // a broken bucket must not stop a take being prepared
+  calls = []; local = null; remote = null;
+  T.Sync.getClip = async ()=>{ calls.push('remote'); return null; };
+  T.Sync.putClip = async ()=>{ calls.push('upload'); throw new Error('bucket down'); };
+  let threw = false;
+  try{ await T.ensureClip('v1','A line while storage is broken.'); }catch(e){ threw = true; }
+  ok('a failing upload does not break preparation', threw === false && calls.indexOf('cache') !== -1);
+
+  T.AudioCache.get = realCacheGet; T.AudioCache.put = realCachePut;
+  T.Sync.getClip = realRemoteGet;  T.Sync.putClip = realRemotePut; T.EL.synth = realSynth;
 }
 
 console.log('\nENSURECLIP — the offline path must surface, not hang');
