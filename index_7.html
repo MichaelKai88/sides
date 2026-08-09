@@ -1,0 +1,1680 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#14100D">
+<title>Sides — self-tape teleprompter</title>
+<style>
+:root{
+  --black:#14100D; --pit:#0C0906; --raised:#1E1915; --edge:#2E2721; --edge-lit:#463C31;
+  --bone:#EFE7DA; --bone-dim:#A29685; --bone-faint:#665C50;
+  --brass:#C9A227; --brass-deep:#8A6F1C; --brass-wash:rgba(201,162,39,.12);
+  --cool:#8FA6AD; --cool-deep:#5A7078; --red:#C4614A;
+  --ui:'Inter','Segoe UI Variable Text','Segoe UI',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+  --script:'Iowan Old Style','Palatino Linotype',Palatino,'Book Antiqua',Georgia,serif;
+  --mono:ui-monospace,'SF Mono','Cascadia Mono','Segoe UI Mono',monospace;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;padding:0;height:100%}
+body{background:var(--black);color:var(--bone);font-family:var(--ui);font-size:15px;line-height:1.55;
+  -webkit-font-smoothing:antialiased;overscroll-behavior:none}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+input,select,textarea{font:inherit;color:inherit}
+::selection{background:var(--brass-wash)}
+:focus-visible{outline:2px solid var(--brass);outline-offset:2px;border-radius:2px}
+
+#setup{max-width:1140px;margin:0 auto;padding:0 28px 140px;min-height:100%}
+@media(max-width:640px){#setup{padding:0 16px 140px}}
+.masthead{display:flex;align-items:baseline;gap:14px;padding:38px 0 26px;flex-wrap:wrap}
+.wordmark{font-family:var(--script);font-size:30px;font-style:italic}
+.wordmark em{font-style:normal;color:var(--brass)}
+.tagline{font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--bone-faint)}
+
+.rail{display:flex;gap:2px;border-top:1px solid var(--edge);border-bottom:1px solid var(--edge);margin-bottom:30px}
+.step{flex:1;padding:15px 4px 14px;text-align:left;position:relative;transition:color .25s}
+.step .n{font-family:var(--mono);font-size:10.5px;color:var(--bone-faint);letter-spacing:.1em}
+.step .t{font-size:14px;color:var(--bone-dim);margin-top:3px}
+.step[aria-current="true"] .t{color:var(--bone)}
+.step[aria-current="true"] .n{color:var(--brass)}
+.step[aria-current="true"]::after{content:'';position:absolute;left:0;right:2px;bottom:-1px;height:1px;background:var(--brass)}
+
+.panel{display:none;animation:rise .3s cubic-bezier(.2,.7,.3,1)}
+.panel.on{display:block}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+
+h2.sec{font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--bone-faint);margin:0 0 12px;font-weight:600}
+.hint{color:var(--bone-dim);font-size:13.5px;margin:0 0 18px;max-width:64ch}
+.btn{padding:10px 20px;border:1px solid var(--edge-lit);border-radius:2px;font-size:13.5px;
+  transition:background .18s,border-color .18s,color .18s;display:inline-block}
+.btn:hover{background:var(--raised);border-color:var(--brass-deep)}
+.btn.primary{background:var(--brass);border-color:var(--brass);color:#1A1305;font-weight:600}
+.btn.primary:hover{background:#DBB43A;border-color:#DBB43A}
+.btn.ghost{border-color:transparent;color:var(--bone-dim);padding:10px 12px}
+.btn.ghost:hover{color:var(--bone);background:var(--raised)}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+.btn.danger:hover{border-color:var(--red);color:var(--red);background:transparent}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:16px}
+
+/* import */
+#drop{border:1px dashed var(--edge-lit);border-radius:3px;padding:44px 24px;text-align:center;
+  transition:border-color .2s,background .2s;cursor:pointer}
+#drop:hover,#drop.over{border-color:var(--brass);background:var(--brass-wash)}
+#drop .big{font-family:var(--script);font-size:21px;margin-bottom:6px}
+#drop .sm{font-size:13px;color:var(--bone-faint)}
+#pasteWrap{display:none;margin-top:20px}
+#paste{width:100%;min-height:260px;background:var(--pit);border:1px solid var(--edge);border-radius:3px;
+  padding:18px 20px;font-family:var(--script);font-size:16px;line-height:1.7;resize:vertical;color:var(--bone)}
+#paste:focus{border-color:var(--edge-lit);outline:none}
+#paste::placeholder{color:var(--bone-faint)}
+#busy{display:none;margin-top:18px;font-family:var(--mono);font-size:12px;color:var(--brass);letter-spacing:.08em}
+
+/* library */
+.lib{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:22px}
+.chip{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--edge);border-radius:2px;
+  padding:7px 10px 7px 13px;font-size:13px;background:var(--raised)}
+.chip:hover{border-color:var(--brass-deep)}
+.chip b{font-weight:500}
+.chip .x{color:var(--bone-faint);font-size:15px;line-height:1;padding:2px 3px}
+.chip .x:hover{color:var(--red)}
+
+/* editor split */
+.split{display:grid;grid-template-columns:330px 1fr;gap:26px;align-items:start;margin-top:8px}
+@media(max-width:900px){.split{grid-template-columns:1fr}}
+#pagePane{position:sticky;top:14px;max-height:80vh;overflow-y:auto;padding-right:6px}
+@media(max-width:900px){#pagePane{position:static;max-height:340px}}
+.pagewrap{margin-bottom:12px}
+.pagewrap .cap{font-family:var(--mono);font-size:10.5px;color:var(--bone-faint);letter-spacing:.1em;margin-bottom:5px}
+.pagewrap img{width:100%;display:block;border:1px solid var(--edge);border-radius:2px;background:#fff}
+.pagewrap.lit img{border-color:var(--brass)}
+
+.tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;padding-bottom:12px;
+  border-bottom:1px solid var(--edge)}
+.count{font-family:var(--mono);font-size:11.5px;color:var(--bone-faint);margin-right:auto}
+.banner{border:1px solid var(--brass-deep);background:var(--brass-wash);border-radius:2px;padding:10px 14px;
+  font-size:13px;margin-bottom:14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.banner span{margin-right:auto}
+
+.ln{display:grid;grid-template-columns:140px 1fr auto;gap:10px;align-items:start;
+  padding:8px 0;border-bottom:1px solid rgba(46,39,33,.55)}
+.ln select{background:var(--pit);border:1px solid var(--edge);border-radius:2px;padding:6px 7px;
+  font-size:12.5px;width:100%;cursor:pointer}
+.ln textarea{width:100%;min-height:30px;background:transparent;border:1px solid transparent;border-radius:2px;padding:5px 7px;
+  font-family:var(--script);font-size:15.5px;line-height:1.5;resize:none;overflow:hidden;
+  color:var(--bone);min-height:2.1em;display:block}
+.ln textarea:hover{border-color:var(--edge)}
+.ln textarea:focus{border-color:var(--edge-lit);background:var(--pit);outline:none}
+.ln .acts{display:flex;gap:1px;opacity:0;transition:opacity .15s}
+.ln:hover .acts,.ln:focus-within .acts{opacity:1}
+.ln .acts button{padding:5px 6px;font-size:12px;color:var(--bone-faint);border-radius:2px}
+.ln .acts button:hover{color:var(--brass);background:var(--raised)}
+.ln .acts button.del:hover{color:var(--red)}
+.ln.is-me textarea{color:var(--bone)}
+.ln.is-reader textarea{color:var(--cool)}
+.ln.is-dir textarea{color:var(--bone-faint);font-style:italic}
+.ln.trimmed{opacity:.3}
+.ln.trimmed textarea{text-decoration:line-through}
+.mark{display:inline-block;font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;color:var(--brass);
+  border:1px solid var(--brass-deep);border-radius:2px;padding:1px 5px;margin-bottom:4px}
+@media(max-width:640px){.ln{grid-template-columns:1fr auto}.ln select{grid-column:1/-1;max-width:190px}}
+
+/* cast */
+.cast-card{border:1px solid var(--edge);border-radius:3px;padding:15px 17px;margin-bottom:10px;background:var(--raised);
+  display:grid;grid-template-columns:1fr auto;gap:13px;align-items:center}
+.cast-name{font-family:var(--script);font-size:20px}
+.cast-meta{font-family:var(--mono);font-size:11px;color:var(--bone-faint);margin-top:2px}
+.seg{display:inline-flex;border:1px solid var(--edge-lit);border-radius:2px;overflow:hidden}
+.seg button{padding:7px 14px;font-size:12.5px;color:var(--bone-dim)}
+.seg button+button{border-left:1px solid var(--edge-lit)}
+.seg button[aria-pressed="true"]{background:var(--brass);color:#1A1305;font-weight:600}
+.cast-extra{grid-column:1/-1;display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding-top:11px;
+  border-top:1px solid var(--edge)}
+.cast-extra label{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--bone-faint)}
+.cast-extra select{background:var(--pit);border:1px solid var(--edge);border-radius:2px;padding:7px 9px;
+  font-size:13px;min-width:190px;max-width:100%;cursor:pointer}
+
+/* settings */
+.field{display:grid;grid-template-columns:180px 1fr;gap:16px;align-items:center;padding:14px 0;
+  border-bottom:1px solid rgba(46,39,33,.55)}
+.field>label{font-size:13.5px;color:var(--bone-dim)}
+.field .val{font-family:var(--mono);font-size:12px;color:var(--brass);min-width:56px;text-align:right}
+.slider{display:flex;align-items:center;gap:14px}
+input[type=range]{-webkit-appearance:none;appearance:none;flex:1;height:1px;background:var(--edge-lit);cursor:pointer}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:15px;height:15px;border-radius:50%;
+  background:var(--brass);box-shadow:0 0 0 4px var(--black)}
+input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%;background:var(--brass);border:none;
+  box-shadow:0 0 0 4px var(--black)}
+.field select{background:var(--pit);border:1px solid var(--edge);border-radius:2px;padding:8px 10px;font-size:13px;width:100%}
+.sw{position:relative;width:44px;height:24px;background:var(--edge);border-radius:12px;transition:background .2s;flex:none}
+.sw::after{content:'';position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;
+  background:var(--bone-faint);transition:transform .2s,background .2s}
+.sw[aria-pressed="true"]{background:var(--brass-deep)}
+.sw[aria-pressed="true"]::after{transform:translateX(20px);background:var(--brass)}
+@media(max-width:640px){.field{grid-template-columns:1fr;gap:8px}}
+
+#launch{position:fixed;left:0;right:0;bottom:0;background:linear-gradient(to top,var(--black) 62%,transparent);
+  padding:26px 28px calc(24px + env(safe-area-inset-bottom));z-index:40}
+#launch .inner{max-width:1140px;margin:0 auto;display:flex;gap:14px;align-items:center;justify-content:flex-end}
+#launchNote{margin-right:auto;font-size:12.5px;color:var(--bone-faint)}
+
+/* prompter */
+#prompter{position:fixed;inset:0;background:var(--black);z-index:100;display:none;overflow:hidden}
+#prompter.on{display:block}
+#rail{position:absolute;left:0;top:0;bottom:0;width:34px;z-index:3;pointer-events:none}
+#railLine{position:absolute;left:16px;top:0;bottom:0;width:1px;background:var(--edge)}
+#railFill{position:absolute;left:16px;top:0;width:1px;background:var(--brass-deep);height:0;transition:height .4s ease}
+#railMark{position:absolute;left:8px;width:17px;height:1px;background:var(--brass);opacity:.85}
+#railMark::before,#railMark::after{content:'';position:absolute;top:-3px;width:1px;height:7px;background:var(--brass)}
+#railMark::before{left:0}#railMark::after{right:0}
+#railLevel{position:absolute;left:16px;width:1px;background:var(--cool);height:0;transition:height .06s linear,opacity .2s;opacity:0}
+#stagewrap{position:absolute;inset:0;overflow:hidden}
+#stage{position:absolute;left:0;right:0;top:0;padding:0 7vw 0 calc(34px + 5vw);will-change:transform}
+@media(max-width:820px){#stage{padding:0 6vw 0 calc(34px + 4vw)}}
+#mirrorwrap.on{transform:scaleX(-1)}
+.seg-line{font-family:var(--script);line-height:1.34;margin:0 0 .62em;transition:opacity .38s ease,color .38s ease;opacity:.16}
+.seg-line.here{opacity:1}.seg-line.past{opacity:.13}.seg-line.near{opacity:.34}
+.seg-line .who{display:block;font-family:var(--ui);font-weight:600;font-size:.3em;letter-spacing:.2em;
+  text-transform:uppercase;margin-bottom:.5em;color:var(--brass)}
+.seg-line.reader .who{color:var(--cool-deep)}
+.seg-line.reader{color:var(--cool)}
+.seg-line.dirn{font-style:italic;color:#A2937F;font-size:.6em!important;max-width:44ch}
+.seg-line.dirn.near{opacity:.82}
+.seg-line.dirn.past{opacity:.2}
+.seg-line .paren{display:block;font-style:italic;font-size:.54em;color:#A2937F;margin:.2em 0 .35em}
+.veil{position:absolute;left:0;right:0;height:22vh;z-index:2;pointer-events:none}
+.veil.t{top:0;background:linear-gradient(to bottom,var(--black) 12%,transparent)}
+.veil.b{bottom:0;background:linear-gradient(to top,var(--black) 12%,transparent)}
+#chrome{position:absolute;left:0;right:0;bottom:0;z-index:6;padding:16px 22px calc(16px + env(safe-area-inset-bottom));
+  display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+  background:linear-gradient(to top,rgba(20,16,13,.94),transparent);opacity:.28;transition:opacity .3s}
+#chrome:hover,#chrome.wake,#chrome:focus-within{opacity:1}
+#chrome .cbtn{padding:8px 12px;border:1px solid var(--edge-lit);border-radius:2px;font-size:12px;
+  color:var(--bone-dim);background:rgba(12,9,6,.75)}
+#chrome .cbtn:hover{color:var(--bone);border-color:var(--brass-deep)}
+#chrome .cbtn[aria-pressed="true"]{color:var(--brass);border-color:var(--brass-deep)}
+#chrome .grp{display:flex;gap:6px;align-items:center}
+#chrome .lbl{font-family:var(--mono);font-size:10.5px;color:var(--bone-faint);letter-spacing:.08em}
+#chrome input[type=range]{width:92px;flex:none}
+#status{position:absolute;top:calc(18px + env(safe-area-inset-top));left:calc(34px + 5vw);z-index:6;
+  font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--bone-faint);
+  display:flex;gap:10px;align-items:center}
+#statusDot{width:6px;height:6px;border-radius:50%;background:var(--bone-faint);transition:background .2s}
+#status.listening #statusDot{background:var(--brass);animation:pulse 1.8s infinite}
+#status.speaking #statusDot{background:var(--cool)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+#count{position:absolute;inset:0;z-index:20;display:none;align-items:center;justify-content:center;
+  background:var(--black);font-family:var(--script);font-size:22vh;color:var(--brass)}
+#count.on{display:flex}
+#tapz{position:absolute;inset:0;z-index:4}
+.toast{position:fixed;left:50%;bottom:120px;transform:translateX(-50%);background:var(--raised);
+  border:1px solid var(--edge-lit);border-radius:2px;padding:11px 18px;font-size:13px;z-index:200;opacity:0;
+  transition:opacity .25s;pointer-events:none;max-width:80vw;text-align:center}
+.toast.on{opacity:1}
+</style>
+</head>
+<body>
+
+<div id="setup">
+  <div class="masthead">
+    <div class="wordmark">Sides<em>.</em></div>
+    <div class="tagline">Self-tape teleprompter</div>
+  </div>
+
+  <nav class="rail">
+    <button class="step" data-step="0" aria-current="true"><span class="n">01</span><span class="t">Script</span></button>
+    <button class="step" data-step="1"><span class="n">02</span><span class="t">Cast</span></button>
+    <button class="step" data-step="2"><span class="n">03</span><span class="t">Setup</span></button>
+  </nav>
+
+  <section class="panel on" data-panel="0">
+    <div class="lib" id="lib"></div>
+
+    <div id="importWrap">
+      <h2 class="sec">Bring in the sides</h2>
+      <div id="drop">
+        <div class="big">Drop a PDF here</div>
+        <div class="sm">or click to choose one — the pages stay on this device</div>
+      </div>
+      <input type="file" id="file" accept="application/pdf" hidden>
+      <div class="row">
+        <button class="btn ghost" id="togglePaste">Paste text instead</button>
+        <button class="btn ghost" id="loadSample">Load a sample scene</button>
+      </div>
+      <div id="busy"></div>
+      <div id="pasteWrap">
+        <textarea id="paste" spellcheck="false" placeholder="INT. HOSPITAL CORRIDOR — NIGHT&#10;&#10;DANIEL&#10;You said you'd be here an hour ago.&#10;&#10;CLAIRE&#10;I was. I couldn't come in."></textarea>
+        <div class="row"><button class="btn primary" id="doParse">Read the script</button></div>
+      </div>
+    </div>
+
+    <div id="editWrap" style="display:none">
+      <h2 class="sec">Check the read</h2>
+      <p class="hint" id="editHint"></p>
+      <div class="banner" id="roleNote" style="display:none"></div>
+      <div class="banner" id="trimBanner" style="display:none">
+        <span id="trimText"></span>
+        <button class="btn ghost" id="showTrim">Show them</button>
+        <button class="btn ghost" id="clearTrim">Clear the trim</button>
+      </div>
+      <div class="tools">
+        <span class="count" id="lineCount"></span>
+        <button class="btn ghost" id="addLine">Add a line</button>
+        <button class="btn ghost danger" id="dropDirs">Remove directions</button>
+        <button class="btn ghost" id="saveScript">Save this script</button>
+        <button class="btn ghost danger" id="startOver">Start over</button>
+      </div>
+      <div class="split">
+        <div id="pagePane"></div>
+        <div id="lines"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" data-panel="1">
+    <h2 class="sec">Who's in the scene</h2>
+    <p class="hint">Every character marked <b>Reader</b> gets spoken aloud in its own voice — as many as the scene has. Mark the one part you're playing as <b>You</b>, and the app waits for you on those lines instead of reading them. <b>Skip</b> leaves a character out entirely. If the script spells one character two ways, merge them with “Same as”.</p>
+    <div id="castList"></div>
+    <p class="hint" id="voiceNote" style="margin-top:18px"></p>
+  </section>
+
+  <section class="panel" data-panel="2">
+    <h2 class="sec">How it runs</h2>
+    <div class="field"><label for="setMode">Advance</label>
+      <select id="setMode">
+        <option value="cue">When I stop talking — hands-free</option>
+        <option value="tap">When I press space or tap</option>
+        <option value="scroll">Continuously, at a set speed</option>
+      </select></div>
+    <div class="field" data-only="cue"><label for="setDevice">Listen on</label>
+      <select id="setDevice"><option value="">Default microphone</option></select></div>
+    <div class="field" data-only="cue"><label for="setSil">How long a silence means I’m done</label>
+      <div class="slider"><input type="range" id="setSil" min="400" max="4500" step="100"><span class="val" id="valSil"></span></div></div>
+    <div class="field" data-only="cue"><label for="setSens">Mic sensitivity</label>
+      <div class="slider"><input type="range" id="setSens" min="1" max="10" step="1"><span class="val" id="valSens"></span></div></div>
+    <div class="field" data-only="scroll"><label for="setSpeed">Scroll speed</label>
+      <div class="slider"><input type="range" id="setSpeed" min="10" max="140" step="2"><span class="val" id="valSpeed"></span></div></div>
+
+    <h2 class="sec" style="margin-top:34px">How it looks</h2>
+    <div class="field"><label for="setFont">Text size</label>
+      <div class="slider"><input type="range" id="setFont" min="22" max="110" step="2"><span class="val" id="valFont"></span></div></div>
+    <div class="field"><label for="setFocus">Eyeline height</label>
+      <div class="slider"><input type="range" id="setFocus" min="20" max="60" step="1"><span class="val" id="valFocus"></span></div></div>
+    <div class="field"><label for="setMirror">Mirror the text</label>
+      <button class="sw" id="setMirror" aria-pressed="false" aria-label="Mirror the text"></button></div>
+    <div class="field"><label for="setNames">Show character names</label>
+      <button class="sw" id="setNames" aria-pressed="true" aria-label="Show character names"></button></div>
+    <div class="field"><label for="setDirs">Show stage directions</label>
+      <button class="sw" id="setDirs" aria-pressed="true" aria-label="Show stage directions"></button></div>
+
+    <h2 class="sec" style="margin-top:34px">The reader</h2>
+    <div class="field"><label for="setRate">Reader pace</label>
+      <div class="slider"><input type="range" id="setRate" min="60" max="140" step="5"><span class="val" id="valRate"></span></div></div>
+    <div class="field"><label for="setVol">Reader volume</label>
+      <div class="slider"><input type="range" id="setVol" min="0" max="100" step="5"><span class="val" id="valVol"></span></div></div>
+    <div class="field"><label for="setCount">Countdown before the take</label>
+      <div class="slider"><input type="range" id="setCount" min="0" max="8" step="1"><span class="val" id="valCount"></span></div></div>
+  </section>
+</div>
+
+<div id="launch"><div class="inner">
+  <span id="launchNote">Bring in a script to begin.</span>
+  <button class="btn" id="btnNext">Next</button>
+  <button class="btn primary" id="btnRun" disabled>Start the take</button>
+</div></div>
+
+<div id="prompter">
+  <div id="stagewrap"><div id="mirrorwrap"><div id="stage"></div></div></div>
+  <div class="veil t"></div><div class="veil b"></div>
+  <div id="rail"><div id="railLine"></div><div id="railFill"></div><div id="railLevel"></div><div id="railMark"></div></div>
+  <div id="tapz"></div>
+  <div id="status"><span id="statusDot"></span><span id="statusText">Ready</span></div>
+  <div id="chrome">
+    <button class="cbtn" id="pExit">Done</button>
+    <button class="cbtn" id="pRestart">Top of scene</button>
+    <button class="cbtn" id="pPause">Hold</button>
+    <span style="width:14px"></span>
+    <div class="grp"><span class="lbl">SIZE</span><button class="cbtn" id="pFontDn">−</button><button class="cbtn" id="pFontUp">+</button></div>
+    <div class="grp" id="grpSpeed" style="display:none"><span class="lbl">SPEED</span><input type="range" id="pSpeed" min="10" max="140" step="2"></div>
+    <div class="grp"><span class="lbl">MIRROR</span><button class="cbtn" id="pMirror" aria-pressed="false">Flip</button></div>
+    <div class="grp" id="grpMic"><span class="lbl">MIC</span><button class="cbtn" id="pMic" aria-pressed="true">On</button></div>
+    <span class="lbl" id="pPos" style="margin-left:auto"></span>
+  </div>
+  <div id="count"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+
+/* ============================================================
+   storage
+   ============================================================ */
+const Store = (()=>{
+  const mem = {};
+  const hasW = typeof window!=='undefined' && window.storage && typeof window.storage.get==='function';
+  let ls=null; try{ localStorage.setItem('__t','1'); localStorage.removeItem('__t'); ls=localStorage; }catch(e){}
+  return {
+    async get(k){
+      try{
+        if(hasW){ const r=await window.storage.get(k); return r?JSON.parse(r.value):null; }
+        if(ls){ const v=ls.getItem(k); return v?JSON.parse(v):null; }
+      }catch(e){}
+      return mem[k]!==undefined?mem[k]:null;
+    },
+    async set(k,v){
+      mem[k]=v;
+      try{ if(hasW){ await window.storage.set(k,JSON.stringify(v)); return; } if(ls) ls.setItem(k,JSON.stringify(v)); }catch(e){}
+    }
+  };
+})();
+
+const DEFAULTS = { mode:'cue', silence:1600, sens:5, speed:46, font:52, focus:38,
+  mirror:false, names:true, dirs:true, rate:100, vol:85, count:3, device:'' };
+const S = { segs:[], cast:{}, set:{...DEFAULTS}, voices:[], step:0, pages:[], scripts:[], name:'', showTrim:false, fileHint:'' };
+let SEQ = 1;
+
+const $  = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+function toast(m, ms=2800){ const t=$('#toast'); t.textContent=m; t.classList.add('on');
+  clearTimeout(t._x); t._x=setTimeout(()=>t.classList.remove('on'), ms); }
+function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+/* ============================================================
+   INGEST — PDF and text into speaker-attributed segments
+   ============================================================ */
+
+const PDFJS_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+const PDFJS_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+let pdfjsReady = null;
+
+function loadPdfJs(){
+  if(pdfjsReady) return pdfjsReady;
+  pdfjsReady = new Promise((res, rej)=>{
+    if(window.pdfjsLib){ window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER; return res(window.pdfjsLib); }
+    const s = document.createElement('script');
+    s.src = PDFJS_SRC;
+    s.onload = ()=>{
+      if(!window.pdfjsLib) return rej(new Error('pdf.js failed to initialise'));
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
+      res(window.pdfjsLib);
+    };
+    s.onerror = ()=>rej(new Error('Could not reach the PDF library'));
+    document.head.appendChild(s);
+  });
+  return pdfjsReady;
+}
+
+/* ---------- page furniture ---------- */
+const JUNK = [
+  /^\d*\s*\(?\s*(CONTINUED|CONT'?D|MORE)\s*[:\)]?\s*(\(\d+\))?\.?$/i,
+  /^Sides by Breakdown Services/i,
+  /^\(?(Pink|Blue|Green|Yellow|Goldenrod|White|Salmon|Cherry|Buff|Tan|Double)\s+Rev\.?/i,
+  /^[A-Za-z+ ]{0,20}Copyright\s*$/i,
+  /^\d+\.?$/, /^\d+\/\d+$/, /^Page \d+/i,
+  /^(Web\s+)?Pte\.?\s*Ltd\.?$/i,
+  /^E\d+:?$/,
+  /\b(Shooting Script|Final Draft)\b/i,
+];
+const SCENE  = /^\d*\s*(INT|EXT|INT\.?\/EXT|I\/E)[\.\s\u2013\u2014-]/i;
+const TRANS  = /^(CUT TO|SMASH CUT|FADE (IN|OUT|TO)|DISSOLVE TO|MATCH CUT|BACK TO)[:\s]*$/i;
+const CUEMARK= /\s*\((CONT'?D|V\.?O\.?|O\.?S\.?|O\.?C\.?|ON TV|TO [A-Z][A-Za-z]*|SUBTITLED|FILTERED|PRE-?LAP|INTERRUPTING)\.?\)/ig;
+
+
+/* Bold glyphs in some PDFs are drawn twice, so text arrives doubled:
+   "((MMOORREE))". Collapse only when most of the string is doubled pairs,
+   which leaves ordinary words containing "ll" or "ee" untouched. */
+function undouble(s){
+  if(s.length < 4) return s;
+  const c = s.replace(/(.)\1/g, '$1');
+  return c.length <= s.length * 0.6 ? c : s;
+}
+
+function isJunk(t){
+  if(!t) return true;
+  if(t.length <= 2) return true;                       // watermark shards: W, eb, Pt
+  return JUNK.some(p => p.test(t));
+}
+
+function nameOf(t){
+  if(!t) return null;
+  let bare = t.replace(CUEMARK, '').trim();
+  bare = bare.replace(/\*+$/,'').trim();                // revision asterisks
+  bare = bare.replace(/\s*\([^)]*\)\s*$/,'').trim();
+  bare = bare.replace(/^[\d.]+\s*/,'').trim();          // fused page numbers: "3.ETHAN"
+  bare = bare.replace(/^[a-z]{1,2}(?=[A-Z]{2})/,'');    // watermark letter fused to a cue: "bFRANK"
+  if(!bare || bare.length > 34) return null;
+  if(!/[A-Z]/.test(bare)) return null;
+  if(bare !== bare.toUpperCase()) return null;
+  if(/[.?!,;:]$/.test(bare)) return null;
+  if(bare.split(/\s+/).length > 4) return null;
+  if(SCENE.test(bare) || TRANS.test(bare)) return null;
+  return bare.replace(/\s+/g,' ');
+}
+
+/* ---------- PDF -> positioned lines ---------- */
+async function pdfToPages(arrayBuffer, onProgress){
+  const pdfjsLib = await loadPdfJs();
+  const doc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const pages = [];
+  for(let p = 1; p <= doc.numPages; p++){
+    onProgress?.(p, doc.numPages);
+    const page = await doc.getPage(p);
+    const tc = await page.getTextContent();
+
+    // rotated glyphs are vertical watermarks, never script content
+    const items = tc.items.filter(it => {
+      if(!it.str || !it.str.trim()) return false;
+      const [a,b,c,d] = it.transform;
+      return Math.abs(b) < 0.01 && Math.abs(c) < 0.01 && a > 0 && d > 0;
+    });
+
+    const rows = [];
+    items.forEach(it => {
+      const x = it.transform[4], y = it.transform[5];
+      let r = rows.find(r => Math.abs(r.y - y) < 3.2);
+      if(!r){ r = { y, cells: [] }; rows.push(r); }
+      r.cells.push({ x, w: it.width || 0, s: it.str });
+    });
+    rows.sort((a,b) => b.y - a.y);
+
+    const lines = [];
+    rows.forEach(r => {
+      r.cells.sort((a,b) => a.x - b.x);
+      let s = '', end = null;
+      r.cells.forEach(c => {
+        if(end !== null && c.x - end > 2.5) s += ' ';
+        s += c.s; end = c.x + c.w;
+      });
+      s = undouble(s.replace(/\s+/g,' ').trim());
+      if(!s) return;
+      const left = r.cells[0].x;
+      lines.push({ text: s, left, right: end, center: (left + end)/2, y: r.y });
+    });
+
+    // render an image of the page so the annotation layer stays visible to the user
+    const vp = page.getViewport({ scale: 1.35 });
+    const cv = document.createElement('canvas');
+    cv.width = vp.width; cv.height = vp.height;
+    await page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+
+    pages.push({ n: p, lines, img: cv.toDataURL('image/jpeg', 0.72), w: vp.width, h: vp.height });
+  }
+  return pages;
+}
+
+/* ---------- which layout regime is this page in? ---------- */
+function sd(a){
+  if(a.length < 2) return 0;
+  const m = a.reduce((x,y)=>x+y,0)/a.length;
+  return Math.sqrt(a.reduce((s,v)=>s+(v-m)*(v-m),0)/a.length);
+}
+function isCentered(lines){
+  const body = lines.filter(l => l.text.length > 3);
+  if(body.length < 6) return false;
+  const L = sd(body.map(l=>l.left)), C = sd(body.map(l=>l.center));
+  return C < L * 0.4;         // Rafael sits at ~0.13; left-aligned scripts land near 0.9
+}
+
+/* ---------- geometric parser (left-aligned screenplay) ---------- */
+function learnColumns(lines){
+  const bucket = x => Math.round(x/4)*4;
+  const all = new Map(), names = new Map();
+  const bump = (m,k) => m.set(k,(m.get(k)||0)+1);
+  lines.forEach(l => {
+    if(l.text.length < 2) return;
+    bump(all, bucket(l.left));
+    if(nameOf(l.text) && l.text.length < 40) bump(names, bucket(l.left));
+  });
+  if(!all.size) return null;
+  const top = m => [...m.entries()].sort((a,b)=>b[1]-a[1])[0]?.[0];
+  const charX = names.size ? top(names) : Math.max(...all.keys());
+
+  // dialogue column = whatever most often sits directly below a cue.
+  // frequency alone misreads action-heavy excerpts.
+  const follow = new Map();
+  for(let i = 0; i < lines.length; i++){
+    const l = lines[i];
+    if(Math.abs(bucket(l.left) - charX) > 8 || !nameOf(l.text)) continue;
+    for(let j = i+1; j < Math.min(i+3, lines.length); j++){
+      const n = lines[j];
+      if(bucket(n.left) >= charX - 8) continue;
+      if(n.text.startsWith('(')) continue;
+      bump(follow, bucket(n.left)); break;
+    }
+  }
+  const diaX = follow.size ? top(follow) : charX - 60;
+  const lower = [...all.entries()].filter(([c]) => c < diaX - 8);
+  const actX = lower.length ? lower.sort((a,b)=>b[1]-a[1])[0][0] : 0;
+  return { actX, diaX, charX };
+}
+
+function parseGeometric(pageLines, cols){
+  const { actX, diaX, charX } = cols;
+  const TOL = 10;
+  const out = [];
+  let cur = null;
+  const close = () => out.forEach(o => o.open = false);
+  const push = (sp, text, kind, page) => {
+    text = text.trim(); if(!text) return;
+    const last = out[out.length-1];
+    if(kind === 'line' && last && last.kind === 'line' && last.speaker === sp && last.open){
+      last.text = (last.text + ' ' + text).trim(); return;
+    }
+    out.push({ id: SEQ++, speaker: sp, text, kind, page, open: kind === 'line', out: false });
+  };
+
+  pageLines.forEach(({ line: l, page }) => {
+    const t = l.text;
+    if(isJunk(t)) return;
+
+    if(Math.abs(l.left - charX) <= TOL){
+      const n = nameOf(t);
+      if(n){ cur = n; close(); return; }
+    }
+    if(cur && l.left > diaX - TOL && l.left < charX - TOL && t.startsWith('(')){
+      push(cur, t, 'paren', page); return;
+    }
+    if(cur && l.left > diaX - TOL - 4 && l.left < charX - TOL){
+      push(cur, t, 'line', page); return;
+    }
+    // dialogue resuming after a page break has no cue in scope
+    if(!cur && Math.abs(l.left - diaX) <= TOL){
+      const last = [...out].reverse().find(o => o.speaker);
+      if(last){ cur = last.speaker; push(cur, t, 'line', page); return; }
+    }
+    if(Math.abs(l.left - actX) <= TOL + 6 || l.left < diaX - TOL){
+      cur = null; close();
+      push(null, t.replace(/^\d+\s+/,'').replace(/\s+\d+$/,''), 'dir', page); return;
+    }
+    if(cur) push(cur, t, 'line', page);
+    else push(null, t, 'dir', page);
+  });
+  return out;
+}
+
+/* ---------- structural parser (centered or geometry-free) ---------- */
+function parseStructural(pageLines){
+  const out = [];
+  let cur = null;
+  const close = () => out.forEach(o => o.open = false);
+  const push = (sp, text, kind, page) => {
+    text = text.trim(); if(!text) return;
+    const last = out[out.length-1];
+    if(kind === 'line' && last && last.kind === 'line' && last.speaker === sp && last.open){
+      last.text = (last.text + ' ' + text).trim(); return;
+    }
+    out.push({ id: SEQ++, speaker: sp, text, kind, page, open: kind === 'line', out: false });
+  };
+
+  const arr = pageLines.filter(x => !isJunk(x.line.text));
+  arr.forEach(({ line: l, page }, i) => {
+    let t = l.text;
+    if(SCENE.test(t) || TRANS.test(t)){ cur = null; close(); push(null, t, 'dir', page); return; }
+    if(/^\(.*\)\.?$/.test(t)){
+      if(cur) push(cur, t, 'paren', page); else push(null, t, 'dir', page);
+      return;
+    }
+    const n = nameOf(t);
+    if(n && i + 1 < arr.length && !nameOf(arr[i+1].line.text)){
+      cur = n; close(); return;
+    }
+    const m = t.match(/^([A-Za-z][A-Za-z0-9 .'’\-]{0,28}?)\s*:\s+(.+)$/);
+    if(m && m[1].split(/\s+/).length <= 4 && nameOf(m[1].toUpperCase())){
+      cur = m[1].toUpperCase(); close(); push(cur, m[2], 'line', page); return;
+    }
+    if(cur) push(cur, t, 'line', page);
+    else push(null, t, 'dir', page);
+  });
+  return out;
+}
+
+/* ---------- entry points ---------- */
+function stitchParens(segs){
+  const fixed = [];
+  segs.forEach(s => {
+    const prev = fixed[fixed.length-1];
+    if(prev && prev.kind === 'paren' && !prev.text.endsWith(')')){
+      prev.text += ' ' + s.text; return;
+    }
+    fixed.push(s);
+  });
+  fixed.forEach(s => delete s.open);
+  return fixed;
+}
+
+function segsFromPages(pages){
+  const docCols = learnColumns(pages.flatMap(p => p.lines));
+  let centeredCount = 0;
+  const all = [];
+  pages.forEach(p => {
+    const flat = p.lines.map(line => ({ line, page: p.n }));
+    if(isCentered(p.lines)){
+      centeredCount++;
+      all.push(...parseStructural(flat));
+    } else {
+      // columns drift between pages; learn per page, inherit when a page has too few cues
+      const cueCount = p.lines.filter(l => nameOf(l.text)).length;
+      const cols = (cueCount >= 2 ? learnColumns(p.lines) : null) || docCols;
+      all.push(...(cols ? parseGeometric(flat, cols) : parseStructural(flat)));
+    }
+  });
+  return { segs: stitchParens(all), regime: centeredCount > pages.length/2 ? 'centered' : 'aligned' };
+}
+
+function segsFromText(raw){
+  const lines = raw.replace(/\r/g,'').split('\n').map(t => ({
+    line: { text: t.trim(), left: 0, right: t.length, center: t.length/2 }, page: 1
+  }));
+  const out = [];
+  let block = [];
+  // blank lines are meaningful in pasted text; parseStructural ignores them, so
+  // run it per block and reset the speaker between blocks
+  lines.forEach(x => {
+    if(!x.line.text){ if(block.length){ out.push(...parseStructural(block)); block = []; } }
+    else block.push(x);
+  });
+  if(block.length) out.push(...parseStructural(block));
+  return { segs: stitchParens(out), regime: 'text' };
+}
+
+
+/* ============================================================
+   voices
+   ============================================================ */
+function loadVoices(){
+  return new Promise(res=>{
+    if(!('speechSynthesis' in window)) return res([]);
+    let done=false, tries=0;
+    const check=()=>{ const v=speechSynthesis.getVoices();
+      if(v.length&&!done){done=true;clearInterval(iv);res(v);}
+      else if(++tries>25&&!done){done=true;clearInterval(iv);res(speechSynthesis.getVoices());} };
+    const iv=setInterval(check,120); speechSynthesis.onvoiceschanged=check; check();
+  });
+}
+function englishVoices(){ const en=S.voices.filter(v=>/^en/i.test(v.lang)); return en.length?en:S.voices; }
+
+/* ============================================================
+   editor
+   ============================================================ */
+function speakers(){
+  const m=new Map();
+  S.segs.forEach(s=>{ if(s.kind!=='dir'&&s.speaker&&!s.out) m.set(s.speaker,(m.get(s.speaker)||0)+(s.kind==='line'?1:0)); });
+  return [...m.entries()].sort((a,b)=>b[1]-a[1]);
+}
+function autosize(ta){
+  // measuring a hidden element returns 0 and collapses the box to nothing,
+  // so fall back to the rows attribute until it is actually on screen
+  if(!ta.isConnected || ta.offsetParent === null){ ta.style.removeProperty('height'); return; }
+  ta.style.height = 'auto';
+  ta.style.height = Math.max(ta.scrollHeight, 30) + 'px';
+}
+function autosizeAll(){ $$('#lines textarea').forEach(autosize); }
+const resizeAll = autosizeAll;
+
+function renderPages(){
+  const pane=$('#pagePane'); pane.innerHTML='';
+  if(!S.pages.length){ pane.innerHTML='<p class="hint" style="font-size:12.5px">Pasted text has no pages to show. Import a PDF to see them here.</p>'; return; }
+  S.pages.forEach(p=>{
+    const d=document.createElement('div'); d.className='pagewrap'; d.dataset.page=p.n;
+    d.innerHTML=`<div class="cap">PAGE ${p.n}</div><img src="${p.img}" alt="Page ${p.n}">`;
+    pane.appendChild(d);
+  });
+}
+function litPage(n){
+  $$('.pagewrap').forEach(w=>w.classList.toggle('lit', +w.dataset.page===n));
+  const w=$(`.pagewrap[data-page="${n}"]`);
+  if(w) w.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+
+function renderLines(){
+  const box=$('#lines'); box.innerHTML='';
+  const names=speakers().map(s=>s[0]);
+  let firstIn=S.segs.findIndex(s=>!s.out), lastIn=-1;
+  S.segs.forEach((s,i)=>{ if(!s.out) lastIn=i; });
+
+  S.segs.forEach((seg,i)=>{
+    if(seg.out && !S.showTrim) return;
+    const row=document.createElement('div');
+    const role=seg.kind==='dir'?'dir':(S.cast[seg.speaker]?.role||'reader');
+    row.className='ln '+(seg.kind==='dir'?'is-dir':role==='me'?'is-me':'is-reader')+(seg.out?' trimmed':'');
+
+    const left=document.createElement('div');
+    if(i===firstIn||i===lastIn){
+      const m=document.createElement('span'); m.className='mark'; m.textContent=i===firstIn?'SCENE STARTS':'SCENE ENDS';
+      left.appendChild(m);
+    }
+    const sel=document.createElement('select');
+    const opts=[...names]; if(seg.speaker&&!opts.includes(seg.speaker)) opts.unshift(seg.speaker);
+    opts.forEach(n=>{ const o=document.createElement('option'); o.value=n; o.textContent=n;
+      if(seg.speaker===n&&seg.kind!=='dir') o.selected=true; sel.appendChild(o); });
+    const od=document.createElement('option'); od.value='__dir'; od.textContent='— Direction —';
+    if(seg.kind==='dir') od.selected=true; sel.appendChild(od);
+    const on=document.createElement('option'); on.value='__new'; on.textContent='+ New character…'; sel.appendChild(on);
+    sel.addEventListener('change',()=>{
+      if(sel.value==='__new'){ const n=prompt('Character name'); if(n&&n.trim()){ seg.speaker=n.trim().toUpperCase(); seg.kind='line'; } }
+      else if(sel.value==='__dir'){ seg.kind='dir'; seg.speaker=null; }
+      else { seg.speaker=sel.value; if(seg.kind==='dir') seg.kind='line'; }
+      refresh();
+    });
+    left.appendChild(sel);
+
+    const ta=document.createElement('textarea'); ta.value=seg.text;
+    ta.rows=Math.min(8, Math.max(1, Math.ceil((seg.text||'').length/64)));
+    ta.addEventListener('input',()=>{ seg.text=ta.value; autosize(ta); save(); });
+    ta.addEventListener('focus',()=>{ if(seg.page) litPage(seg.page); });
+
+    const acts=document.createElement('div'); acts.className='acts';
+    const mk=(label,title,fn,cls)=>{ const b=document.createElement('button'); b.textContent=label; b.title=title;
+      if(cls) b.className=cls; b.addEventListener('click',fn); acts.appendChild(b); };
+    if(seg.out){
+      mk('↺','Bring back into the scene',()=>{ seg.out=false; refresh(); });
+    } else {
+      mk('⤒','Scene starts here — trim everything above',()=>{
+        const k=S.segs.indexOf(seg); S.segs.forEach((s,j)=>{ if(j<k) s.out=true; }); S.showTrim=false; refresh(); });
+      mk('⤓','Scene ends here — trim everything below',()=>{
+        const k=S.segs.indexOf(seg); S.segs.forEach((s,j)=>{ if(j>k) s.out=true; }); S.showTrim=false; refresh(); });
+      mk('⁄','Split at the cursor',()=>{
+        const at=ta.selectionStart;
+        if(at<=0||at>=ta.value.length) return toast('Put the cursor where the line should break first.');
+        const a=ta.value.slice(0,at).trim(), b=ta.value.slice(at).trim();
+        seg.text=a;
+        S.segs.splice(S.segs.indexOf(seg)+1,0,{id:SEQ++,speaker:seg.speaker,text:b,kind:seg.kind,page:seg.page,out:false});
+        refresh();
+      });
+    }
+    mk('×','Delete this line',()=>{ S.segs=S.segs.filter(x=>x.id!==seg.id); refresh(); },'del');
+
+    row.append(left,ta,acts); box.appendChild(row); autosize(ta);
+  });
+
+  resizeAll();
+  const nl=S.segs.filter(s=>s.kind==='line'&&!s.out).length;
+  $('#lineCount').textContent=`${nl} spoken ${nl===1?'line':'lines'} · ${speakers().length} characters`;
+  const trimmed=S.segs.filter(s=>s.out).length;
+  requestAnimationFrame(autosizeAll);
+  $('#trimBanner').style.display=trimmed?'flex':'none';
+  $('#trimText').textContent=`${trimmed} ${trimmed===1?'line is':'lines are'} outside the scene and won't be used.`;
+  $('#showTrim').textContent=S.showTrim?'Hide them':'Show them';
+}
+
+function guessMe(names){
+  // sides are almost always filed under the role, e.g. "DAMAGEDGOODS_Kirk_-_DG"
+  const hint = (S.fileHint||'').toUpperCase().replace(/[^A-Z]+/g,' ');
+  const hit = names.find(n => n.split(/\s+/).some(w => w.length>2 && hint.includes(w)));
+  return hit || names[0];
+}
+function syncCast(){
+  const keep={};
+  const names = speakers().map(s=>s[0]);
+  const fresh = !Object.keys(S.cast).length;
+  const mine = fresh ? guessMe(names) : null;
+  names.forEach((n,i)=>{ keep[n]=S.cast[n]||{role:(fresh ? n===mine : i===0)?'me':'reader',voice:''}; });
+  const ev=englishVoices(); let vi=0;
+  Object.keys(keep).forEach(n=>{ if(keep[n].role==='reader'&&!keep[n].voice&&ev.length){ keep[n].voice=ev[vi%ev.length].voiceURI; vi++; } });
+  S.cast=keep;
+}
+
+function renderCast(){
+  const box=$('#castList'); box.innerHTML='';
+  const list=speakers();
+  if(!list.length){ box.innerHTML='<p class="hint">No characters yet. Bring in a script first.</p>'; return; }
+  const ev=englishVoices();
+  list.forEach(([name,count])=>{
+    const c=S.cast[name]; const card=document.createElement('div'); card.className='cast-card';
+    const left=document.createElement('div');
+    left.innerHTML=`<div class="cast-name">${esc(name)}</div><div class="cast-meta">${count} ${count===1?'line':'lines'}</div>`;
+    const seg=document.createElement('div'); seg.className='seg';
+    [['me','You'],['reader','Reader'],['skip','Skip']].forEach(([v,lab])=>{
+      const b=document.createElement('button'); b.textContent=lab;
+      b.setAttribute('aria-pressed', c.role===v?'true':'false');
+      b.addEventListener('click',()=>{ c.role=v; refresh(); });
+      seg.appendChild(b);
+    });
+    card.append(left,seg);
+
+    const extra=document.createElement('div'); extra.className='cast-extra';
+    if(c.role==='reader'){
+      const lab=document.createElement('label'); lab.textContent='Voice';
+      const sel=document.createElement('select');
+      if(!ev.length){ const o=document.createElement('option'); o.textContent='No voices on this device'; sel.appendChild(o); sel.disabled=true; }
+      ev.forEach(v=>{ const o=document.createElement('option'); o.value=v.voiceURI; o.textContent=`${v.name} (${v.lang})`;
+        if(c.voice===v.voiceURI) o.selected=true; sel.appendChild(o); });
+      sel.addEventListener('change',()=>{ c.voice=sel.value; save(); });
+      const test=document.createElement('button'); test.className='btn ghost'; test.textContent='Hear it';
+      test.addEventListener('click',()=>{ const l=S.segs.find(s=>s.speaker===name&&s.kind==='line'&&!s.out);
+        Reader.say(l?l.text:`This is ${name}.`, c.voice); });
+      extra.append(lab,sel,test);
+    }
+    const others=list.map(x=>x[0]).filter(n=>n!==name);
+    if(others.length){
+      const ml=document.createElement('label'); ml.textContent='Same as';
+      const msel=document.createElement('select');
+      const o0=document.createElement('option'); o0.value=''; o0.textContent='— separate character —'; msel.appendChild(o0);
+      others.forEach(n=>{ const o=document.createElement('option'); o.value=n; o.textContent=n; msel.appendChild(o); });
+      msel.addEventListener('change',()=>{
+        if(!msel.value) return;
+        const into=msel.value;
+        S.segs.forEach(s=>{ if(s.speaker===name) s.speaker=into; });
+        delete S.cast[name];
+        refresh(); toast(`${name} merged into ${into}.`);
+      });
+      extra.append(ml,msel);
+    }
+    if(extra.children.length) card.appendChild(extra);
+    box.appendChild(card);
+  });
+  const n=englishVoices().length;
+  $('#voiceNote').textContent = n
+    ? `${n} voices on this device — your system's own, so they're free, offline and instant.`
+    : 'No speech voices found. The prompter still runs; the reader will be silent.';
+}
+
+function refresh(){ syncCast(); renderLines(); renderCast(); updateLaunch(); save(); }
+
+/* ============================================================
+   ingest wiring
+   ============================================================ */
+function afterParse(result, label){
+  S.segs = result.segs;
+  S.cast = {}; S.showTrim = false; S.name = label || ''; S.fileHint = label || '';
+  if(!S.segs.length){ toast("Nothing readable in that. Try pasting the text instead."); return; }
+  $('#importWrap').style.display='none';
+  $('#editWrap').style.display='block';
+  const spoken=S.segs.filter(s=>s.kind==='line').length;
+  $('#editHint').innerHTML = S.pages.length
+    ? `The pages are here so you can see anything the text layer can't — <b>START</b> and <b>END</b> marks, handwriting, crossed-out lines. Use ⤒ and ⤓ on a line to trim to the marked scene.`
+    : `Reassign a speaker with the dropdown, edit text inline, split a line with ⁄, delete anything that isn't dialogue.`;
+  refresh();
+  renderPages();
+  const me = Object.keys(S.cast).find(n=>S.cast[n].role==='me');
+  const others = Object.keys(S.cast).filter(n=>S.cast[n].role==='reader');
+  $('#roleNote').style.display='flex';
+  $('#roleNote').innerHTML = `<span>Playing <b>${esc(me||'nobody')}</b>. `
+    + (others.length ? `Reading the other ${others.length===1?'part':`${others.length} parts`}: ${others.map(esc).join(', ')}.`
+                     : 'No other parts to read.')
+    + `</span>`;
+  const b=document.createElement('button'); b.className='btn ghost'; b.textContent='Change in Cast';
+  b.addEventListener('click',()=>goStep(1)); $('#roleNote').appendChild(b);
+  toast(`Read ${spoken} spoken lines across ${S.pages.length||1} ${S.pages.length===1?'page':'pages'}.`);
+}
+
+async function importPdf(file){
+  const busy=$('#busy'); busy.style.display='block'; busy.textContent='OPENING THE PDF…';
+  try{
+    const buf=await file.arrayBuffer();
+    S.pages = await pdfToPages(buf,(p,n)=>{ busy.textContent=`READING PAGE ${p} OF ${n}…`; });
+    const res = segsFromPages(S.pages);
+    busy.style.display='none';
+    afterParse(res, file.name.replace(/\.pdf$/i,''));
+  }catch(e){
+    busy.style.display='none';
+    toast(e.message.includes('reach') ? 'Could not load the PDF reader. Check your connection, or paste the text instead.' : 'That PDF could not be read. Try pasting the text instead.', 5000);
+  }
+}
+
+$('#drop').addEventListener('click',()=>$('#file').click());
+$('#file').addEventListener('change',e=>{ if(e.target.files[0]) importPdf(e.target.files[0]); e.target.value=''; });
+['dragenter','dragover'].forEach(ev=>$('#drop').addEventListener(ev,e=>{ e.preventDefault(); $('#drop').classList.add('over'); }));
+['dragleave','drop'].forEach(ev=>$('#drop').addEventListener(ev,e=>{ e.preventDefault(); $('#drop').classList.remove('over'); }));
+$('#drop').addEventListener('drop',e=>{ const f=e.dataTransfer.files[0]; if(f&&/pdf$/i.test(f.name)) importPdf(f); else toast('That needs to be a PDF.'); });
+
+$('#togglePaste').addEventListener('click',()=>{
+  const w=$('#pasteWrap'); const on=w.style.display==='block';
+  w.style.display=on?'none':'block';
+  $('#togglePaste').textContent=on?'Paste text instead':'Hide the paste box';
+  if(!on) $('#paste').focus();
+});
+$('#doParse').addEventListener('click',()=>{
+  const raw=$('#paste').value;
+  if(!raw.trim()) return toast('Nothing to read yet.');
+  S.pages=[]; afterParse(segsFromText(raw), 'Pasted script');
+});
+$('#loadSample').addEventListener('click',()=>{ S.pages=[]; afterParse(segsFromText(SAMPLE), 'Sample scene'); });
+
+$('#startOver').addEventListener('click',()=>{
+  S.segs=[]; S.cast={}; S.pages=[]; S.name=''; $('#paste').value='';
+  $('#editWrap').style.display='none'; $('#importWrap').style.display='block';
+  refresh();
+});
+$('#showTrim').addEventListener('click',()=>{ S.showTrim=!S.showTrim; renderLines(); });
+$('#clearTrim').addEventListener('click',()=>{ S.segs.forEach(s=>s.out=false); S.showTrim=false; refresh(); });
+$('#addLine').addEventListener('click',()=>{
+  const f=speakers()[0]?.[0]||'CHARACTER';
+  S.segs.push({id:SEQ++,speaker:f,text:'New line',kind:'line',page:S.pages.length?S.pages[S.pages.length-1].n:1,out:false});
+  refresh();
+});
+$('#dropDirs').addEventListener('click',()=>{
+  const before=S.segs.length; S.segs=S.segs.filter(s=>s.kind!=='dir'); refresh();
+  toast(`Removed ${before-S.segs.length} direction lines.`);
+});
+
+/* ---------- script library ---------- */
+function renderLib(){
+  const box=$('#lib'); box.innerHTML='';
+  if(!S.scripts.length) return;
+  S.scripts.forEach((sc,i)=>{
+    const c=document.createElement('div'); c.className='chip';
+    const b=document.createElement('button'); b.innerHTML=`<b>${esc(sc.name)}</b>`;
+    b.addEventListener('click',()=>{
+      S.segs=sc.segs.map(s=>({...s})); S.cast=sc.cast||{}; S.pages=[]; S.name=sc.name; S.showTrim=false;
+      $('#importWrap').style.display='none'; $('#editWrap').style.display='block';
+      refresh(); renderPages(); toast(`Loaded "${sc.name}". Page images aren't kept — re-import the PDF if you need them.`,4200);
+    });
+    const x=document.createElement('button'); x.className='x'; x.innerHTML='&times;'; x.title='Delete';
+    x.addEventListener('click',()=>{ S.scripts.splice(i,1); renderLib(); save(); });
+    c.append(b,x); box.appendChild(c);
+  });
+}
+$('#saveScript').addEventListener('click',()=>{
+  const name=prompt('Name this script', S.name||'Untitled');
+  if(!name||!name.trim()) return;
+  const rec={name:name.trim(), segs:S.segs.map(s=>({...s})), cast:S.cast, at:Date.now()};
+  const k=S.scripts.findIndex(s=>s.name===rec.name);
+  if(k>=0) S.scripts[k]=rec; else S.scripts.unshift(rec);
+  S.scripts=S.scripts.slice(0,12);
+  S.name=rec.name; renderLib(); save(); toast(`Saved "${rec.name}".`);
+});
+
+/* ============================================================
+   steps + settings
+   ============================================================ */
+function goStep(n){
+  S.step=n;
+  $$('.step').forEach(b=>b.setAttribute('aria-current', +b.dataset.step===n?'true':'false'));
+  $$('.panel').forEach(p=>p.classList.toggle('on', +p.dataset.panel===n));
+  if(n===0) resizeAll();
+  if(n===0) requestAnimationFrame(autosizeAll);
+  if(n===1) renderCast();
+  if(n===2) refreshSettingsUI();
+  updateLaunch(); window.scrollTo({top:0,behavior:'smooth'});
+}
+$$('.step').forEach(b=>b.addEventListener('click',()=>{
+  if(+b.dataset.step>0 && !S.segs.length) return toast('Bring in a script first.');
+  goStep(+b.dataset.step);
+}));
+$('#btnNext').addEventListener('click',()=>{
+  if(!S.segs.length) return toast('Bring in a script first.');
+  goStep(Math.min(2,S.step+1));
+});
+
+function updateLaunch(){
+  const has=S.segs.some(s=>s.kind==='line'&&!s.out);
+  const hasMe=Object.values(S.cast).some(c=>c.role==='me');
+  $('#btnRun').disabled=!has;
+  $('#btnNext').style.display=S.step<2?'':'none';
+  let note='';
+  if(!has) note='Bring in a script to begin.';
+  else if(!hasMe) note='No character is marked as you — every line will be read aloud.';
+  else{
+    const mine=S.segs.filter(s=>s.kind==='line'&&!s.out&&S.cast[s.speaker]?.role==='me').length;
+    const theirs=S.segs.filter(s=>s.kind==='line'&&!s.out&&S.cast[s.speaker]?.role==='reader').length;
+    note=`${mine} of your lines · ${theirs} read to you`;
+  }
+  $('#launchNote').textContent=note;
+}
+
+const settingBind=[
+  ['#setSil','silence','#valSil',v=>`${(v/1000).toFixed(1)}s`],
+  ['#setSens','sens','#valSens',v=>`${v}/10`],
+  ['#setSpeed','speed','#valSpeed',v=>`${v}`],
+  ['#setFont','font','#valFont',v=>`${v}px`],
+  ['#setFocus','focus','#valFocus',v=>`${v}%`],
+  ['#setRate','rate','#valRate',v=>`${v}%`],
+  ['#setVol','vol','#valVol',v=>`${v}%`],
+  ['#setCount','count','#valCount',v=>v?`${v}s`:'off'],
+];
+settingBind.forEach(([sel,key,valSel,fmt])=>{
+  $(sel).addEventListener('input',()=>{
+    S.set[key]=+$(sel).value; $(valSel).textContent=fmt(+$(sel).value);
+    if(P.on&&(key==='font'||key==='focus')){ applyFont(); centerOn(P.cues[P.idx],false); }
+    save();
+  });
+});
+$('#setMode').addEventListener('change',()=>{ S.set.mode=$('#setMode').value; refreshSettingsUI(); save(); });
+$('#setDevice').addEventListener('change',()=>{ S.set.device=$('#setDevice').value; save(); });
+const SWITCHES={setMirror:'mirror',setNames:'names',setDirs:'dirs'};
+Object.keys(SWITCHES).forEach(id=>$('#'+id).addEventListener('click',()=>{
+  const b=$('#'+id), on=b.getAttribute('aria-pressed')==='true';
+  b.setAttribute('aria-pressed', on?'false':'true');
+  S.set[SWITCHES[id]]=!on;
+  if(P.on){ buildStage(); paintFocus(); centerOn(P.cues[P.idx],false); }
+  save();
+}));
+function refreshSettingsUI(){
+  settingBind.forEach(([sel,key,valSel,fmt])=>{ $(sel).value=S.set[key]; $(valSel).textContent=fmt(S.set[key]); });
+  $('#setMode').value=S.set.mode;
+  $('#setMirror').setAttribute('aria-pressed',S.set.mirror?'true':'false');
+  $('#setNames').setAttribute('aria-pressed',S.set.names?'true':'false');
+  $('#setDirs').setAttribute('aria-pressed',S.set.dirs?'true':'false');
+  $$('[data-only]').forEach(f=>{ f.style.display = f.dataset.only===S.set.mode ? '' : 'none'; });
+}
+async function listDevices(){
+  try{
+    const d=await navigator.mediaDevices.enumerateDevices();
+    const sel=$('#setDevice'); sel.innerHTML='<option value="">Default microphone</option>';
+    d.filter(x=>x.kind==='audioinput').forEach((m,i)=>{
+      const o=document.createElement('option'); o.value=m.deviceId; o.textContent=m.label||`Microphone ${i+1}`;
+      if(S.set.device===m.deviceId) o.selected=true; sel.appendChild(o);
+    });
+  }catch(e){}
+}
+$('#btnRun').addEventListener('click', async ()=>{
+  if(!S.segs.some(s=>s.kind==='line'&&!s.out)) return;
+  await startPrompter();
+});
+
+/* ============================================================
+   reader (TTS)
+   ============================================================ */
+const Reader = {
+  cur:null, nudge:null, warned:false,
+  warm(){
+    if(!('speechSynthesis' in window)) return;
+    try{ speechSynthesis.cancel(); if(speechSynthesis.paused) speechSynthesis.resume(); }catch(e){}
+  },
+  stop(){
+    clearInterval(this.nudge); this.nudge=null;
+    try{ speechSynthesis.cancel(); }catch(e){}
+    this.cur=null;
+  },
+  /* Resolves {ok} ALWAYS. A hard ceiling is armed before we attempt to speak,
+     so no failure mode inside the speech engine can leave the take stalled. */
+  say(text, voiceURI){
+    const clean = String(text||'').replace(/\([^)]*\)/g,' ').replace(/\s+/g,' ').trim();
+    const rate  = S.set.rate/100;
+    const words = clean ? clean.split(/\s+/).length : 0;
+    const expect = Math.max(1500, words * 520 / rate);
+
+    return new Promise(res=>{
+      if(!('speechSynthesis' in window) || !clean) return res({ ok:false, expect:0 });
+
+      let settled=false, started=false, tries=0, t1=null;
+      const done = ok => {
+        if(settled) return; settled = true;
+        clearTimeout(t1); clearTimeout(hard);
+        clearInterval(this.nudge); this.nudge = null;
+        this.cur = null;
+        res({ ok, expect });
+      };
+      const hard = setTimeout(()=>{ try{ speechSynthesis.cancel(); }catch(e){} done(false); },
+                              expect + 8000);
+
+      const go = ()=>{
+        if(settled) return;
+        tries++;
+        try{ speechSynthesis.cancel(); }catch(e){}
+        setTimeout(()=>{
+          if(settled) return;
+          try{ if(speechSynthesis.paused) speechSynthesis.resume(); }catch(e){}
+          let u;
+          try{ u = new SpeechSynthesisUtterance(clean); }
+          catch(e){ return tries < 3 ? go() : done(false); }
+          const v = S.voices.find(x=>x.voiceURI===voiceURI);
+          if(v) u.voice = v;
+          u.rate = rate; u.volume = S.set.vol/100;
+
+          u.onstart = ()=>{
+            started = true; clearTimeout(t1);
+            if(expect > 11000 && !this.nudge){
+              this.nudge = setInterval(()=>{
+                try{ if(speechSynthesis.speaking && !speechSynthesis.paused){
+                  speechSynthesis.pause(); speechSynthesis.resume(); } }catch(e){}
+              }, 9000);
+            }
+          };
+          u.onend   = ()=>done(true);
+          u.onerror = ()=>{ if(!started && tries < 3) go(); else done(false); };
+
+          t1 = setTimeout(()=>{ if(started||settled) return; tries < 3 ? go() : done(false); }, 900);
+          this.cur = u;
+          try{ speechSynthesis.speak(u); }
+          catch(e){ tries < 3 ? go() : done(false); }
+        }, 120);
+      };
+      go();
+    });
+  }
+};
+
+/* ============================================================
+   listener (voice activity detection) — local, no network
+   ============================================================ */
+const Listener = {
+  stream:null, ctx:null, an:null, buf:null, raf:0,
+  level:0, floor:0.006, running:false, gated:false, enabled:true,
+  async start(deviceId){
+    if(!navigator.mediaDevices?.getUserMedia) throw new Error('no mic api');
+    const c = { echoCancellation:true, noiseSuppression:true, autoGainControl:true };
+    if(deviceId) c.deviceId = { exact: deviceId };
+    this.stream = await navigator.mediaDevices.getUserMedia({ audio:c });
+    const AC = window.AudioContext || window.webkitAudioContext;
+    this.ctx = new AC();
+    if(this.ctx.state==='suspended') await this.ctx.resume();
+    const src = this.ctx.createMediaStreamSource(this.stream);
+    this.an = this.ctx.createAnalyser();
+    this.an.fftSize = 1024; this.an.smoothingTimeConstant = 0.5;
+    src.connect(this.an);
+    this.buf = new Float32Array(this.an.fftSize);
+    this.running = true;
+    const tick = ()=>{
+      if(!this.running) return;
+      this.an.getFloatTimeDomainData(this.buf);
+      let sum=0; for(let i=0;i<this.buf.length;i++) sum += this.buf[i]*this.buf[i];
+      const rms = Math.sqrt(sum/this.buf.length);
+      this.level = this.level*0.65 + rms*0.35;
+      // falls fast toward quiet, rises slowly - a transient during calibration
+      // can no longer leave the listener deaf for the whole take
+      if(!this.gated){
+        if(this.level < this.floor) this.floor = this.floor*0.90 + this.level*0.10;
+        else                        this.floor = this.floor*0.999 + this.level*0.001;
+        this.floor = Math.min(Math.max(this.floor, 0.0025), 0.05);
+      }
+      this.raf = requestAnimationFrame(tick);
+    };
+    tick();
+  },
+  async calibrate(ms=1100){
+    const t0 = performance.now(); let peak = 0;
+    return new Promise(res=>{
+      const step=()=>{
+        peak = Math.max(peak, this.level);
+        if(performance.now()-t0 < ms) requestAnimationFrame(step);
+        else { this.floor = Math.max(peak, 0.0035); res(this.floor); }
+      };
+      step();
+    });
+  },
+  health(){
+    try{ if(this.ctx && this.ctx.state === 'suspended') this.ctx.resume(); }catch(e){}
+  },
+  threshold(){
+    // sens 1 (forgiving/loud room) → 10 (sensitive/quiet room)
+    const mult = 4.2 - (S.set.sens - 1) * 0.34;   // 4.2 … 1.14
+    return Math.min(Math.max(this.floor * mult, 0.006), 0.075);
+  },
+  loud(){ return !this.gated && this.enabled && this.level > this.threshold(); },
+  stop(){
+    this.running=false; cancelAnimationFrame(this.raf);
+    try{ this.stream?.getTracks().forEach(t=>t.stop()); }catch(e){}
+    try{ this.ctx?.close(); }catch(e){}
+    this.stream=null; this.ctx=null; this.level=0;
+  }
+};
+
+/* ============================================================
+   prompter
+   ============================================================ */
+const P = {
+  on:false, mode:'cue', idx:0, cues:[], els:[], paused:false,
+  wake:null, scrollY:0, lastT:0, raf:0, cueState:null, busy:false, wps:2.2, view:[]
+};
+
+/* Consecutive segments by the same speaker are one speech. Kept apart, you
+   deliver it all on the first and the second waits for words that never come. */
+function mergedView(){
+  const src = visibleSegs().filter(s => S.set.dirs || s.kind !== 'dir');
+  const out = [];
+  src.forEach(s => {
+    const last = out[out.length-1];
+    if(s.kind !== 'dir' && last && last.kind !== 'dir' && last.speaker === s.speaker){
+      if(s.kind === 'paren') last.parens.push(s.text);
+      else last.text = (last.text + ' ' + s.text).trim();
+      return;
+    }
+    out.push({ speaker: s.speaker, kind: s.kind === 'paren' ? 'line' : s.kind,
+               text: s.kind === 'paren' ? '' : s.text,
+               parens: s.kind === 'paren' ? [s.text] : [], page: s.page });
+  });
+  return out.filter(s => s.kind === 'dir' || s.text || s.parens.length);
+}
+
+function visibleSegs(){
+  return S.segs.filter(s => !s.out)
+                .filter(s => s.kind==='dir' || !s.speaker || S.cast[s.speaker]?.role !== 'skip');
+}
+
+function buildStage(){
+  const stage = $('#stage'); stage.innerHTML='';
+  P.els=[]; P.cues=[];
+  const segs = mergedView();
+  P.view = segs;
+  let lastSpeaker = null;
+  segs.forEach((seg,i)=>{
+    const d = document.createElement('div');
+    d.className = 'seg-line';
+    if(seg.kind==='dir'){ d.classList.add('dirn'); lastSpeaker=null; }
+    else {
+      const role = S.cast[seg.speaker]?.role || 'reader';
+      if(role==='reader') d.classList.add('reader');
+      const showName = S.set.names && seg.speaker !== lastSpeaker;
+      const pars = (seg.parens||[]).map(p=>`<span class="paren">${esc(p)}</span>`).join('');
+      d.innerHTML = (showName ? `<span class="who">${esc(seg.speaker)}</span>` : '') + pars + esc(seg.text);
+      lastSpeaker = seg.speaker;
+    }
+    if(seg.kind==='dir') d.textContent = seg.text;
+    d._seg = seg;
+    stage.appendChild(d);
+    P.els.push(d);
+    if(seg.kind==='line') P.cues.push(i);
+  });
+  applyFont();
+}
+function esc(s){ return String(s).replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+function applyFont(){
+  $('#stage').style.fontSize = S.set.font + 'px';
+  const mark = $('#railMark');
+  mark.style.top = S.set.focus + 'vh';
+}
+
+function focusPx(){ return window.innerHeight * (S.set.focus/100); }
+
+function centerOn(i, animate=true){
+  const el = P.els[i]; if(!el) return;
+  const stage = $('#stage');
+  const target = focusPx() - (el.offsetTop + el.offsetHeight/2);
+  stage.style.transition = animate ? 'transform .42s cubic-bezier(.25,.8,.35,1)' : 'none';
+  stage.style.transform = `translateY(${target}px)`;
+  P.scrollY = -target;
+}
+
+function paintFocus(){
+  const cueIdx = P.cues[P.idx];
+  P.els.forEach((el,i)=>{
+    el.classList.remove('here','past','near');
+    if(i===cueIdx) el.classList.add('here');
+    else if(el.classList.contains('dirn') && Math.abs(i-cueIdx) <= 2) el.classList.add('near');
+    else if(i<cueIdx) el.classList.add('past');
+    else if(i<=cueIdx+2) el.classList.add('near');
+  });
+  const pct = P.cues.length ? ((P.idx+1)/P.cues.length)*100 : 0;
+  $('#railFill').style.height = pct + '%';
+  $('#pPos').textContent = P.cues.length ? `${P.idx+1} / ${P.cues.length}` : '';
+}
+
+function setStatus(kind, text){
+  const s = $('#status');
+  s.className = kind || '';
+  $('#statusText').textContent = text;
+}
+
+async function startPrompter(){
+  P.on = true; P.mode = S.set.mode; P.idx = 0; P.paused=false; P.busy=false; P.wps = 2.2; Reader.warned=false;
+  $('#prompter').classList.add('on');
+  $('#mirrorwrap').classList.toggle('on', S.set.mirror);
+  $('#pMirror').setAttribute('aria-pressed', S.set.mirror?'true':'false');
+  $('#grpSpeed').style.display = P.mode==='scroll' ? 'flex' : 'none';
+  $('#grpMic').style.display   = P.mode==='cue' ? 'flex' : 'none';
+  $('#pSpeed').value = S.set.speed;
+  buildStage();
+  paintFocus();
+  centerOn(P.cues[0] ?? 0, false);
+  Reader.warm();
+
+  try{ P.wake = await navigator.wakeLock?.request('screen'); }catch(e){}
+
+  if(P.mode==='cue'){
+    setStatus('', 'Checking the room');
+    try{
+      await Listener.start(S.set.device || undefined);
+      Listener.enabled = true;
+      $('#pMic').setAttribute('aria-pressed','true'); $('#pMic').textContent='On';
+      await Listener.calibrate();
+    }catch(e){
+      P.mode='tap'; Listener.enabled=false;
+      $('#grpMic').style.display='none';
+      toast('No microphone available — use the spacebar or tap to advance.', 4200);
+    }
+  }
+
+  await countdown();
+  runLoop();
+}
+
+function countdown(){
+  const n = S.set.count;
+  if(!n) return Promise.resolve();
+  const el = $('#count'); el.classList.add('on');
+  return new Promise(res=>{
+    let k = n;
+    const tick=()=>{
+      if(k<=0){ el.classList.remove('on'); el.textContent=''; return res(); }
+      el.textContent = k; k--;
+      setTimeout(tick, 1000);
+    };
+    tick();
+  });
+}
+
+function stopPrompter(){
+  P.on=false;
+  cancelAnimationFrame(P.raf);
+  Reader.stop();
+  Listener.stop();
+  try{ P.wake?.release(); }catch(e){}
+  P.wake=null;
+  $('#prompter').classList.remove('on');
+}
+
+/* --- cue engine --- */
+function newCueState(){
+  const seg = P.view[P.cues[P.idx]];
+  const words = seg ? seg.text.trim().split(/\s+/).length : 4;
+  const expected = Math.max(1200, (words / P.wps) * 1000);
+  return { t0: performance.now(), words, expected,
+           spoke:false, spokeAt:0, lastLoud:0, quietSince:0 };
+}
+
+/* Learn the actual delivery pace from lines that ran clean, so the estimate
+   stops being a guess about how fast this person talks. */
+function learnPace(st){
+  if(!st || !st.spoke || st.words < 5) return;
+  const secs = (st.lastLoud - st.spokeAt) / 1000;
+  if(secs < 0.6) return;
+  const wps = st.words / secs;
+  if(wps < 1.4 || wps > 4.5) return;          // implausible, ignore
+  // internal pauses make a line look slow; clamp so the estimate can never
+  // inflate far enough to make a later line unsatisfiable
+  P.wps = Math.min(3.4, Math.max(1.7, P.wps * 0.8 + wps * 0.2));
+}
+
+async function runLoop(){
+  if(!P.on) return;
+  if(P.mode==='scroll'){ scrollLoop(); return; }
+  P.cueState = newCueState();
+  cueLoop();
+}
+
+async function advanceInto(i){
+  if(!P.on) return;
+  P.idx = Math.max(0, Math.min(i, P.cues.length-1));
+  paintFocus();
+  centerOn(P.cues[P.idx]);
+  const seg = P.view[P.cues[P.idx]];
+  const role = S.cast[seg.speaker]?.role || 'reader';
+
+  if(role==='reader'){
+    P.busy = true; Listener.gated = true;
+    setStatus('speaking', seg.speaker);
+    $('#railLevel').style.opacity = 0;
+    const began = performance.now();
+    try{
+      await new Promise(r=>setTimeout(r,260));
+      if(!P.on) return;
+      const r = await Reader.say(seg.text, S.cast[seg.speaker]?.voice);
+      if(!P.on) return;
+      if(!r.ok){
+        // hold the beat so the scene keeps its rhythm on camera
+        const left = r.expect - (performance.now() - began);
+        if(left > 250) await new Promise(x=>setTimeout(x, Math.min(left, 9000)));
+        if(!Reader.warned){
+          Reader.warned = true;
+          toast("The reader didn't speak that line — holding the beat. Space always moves you on.", 5000);
+        }
+      }
+    } finally {
+      Listener.gated = false; P.busy = false;
+    }
+    if(!P.on) return;
+    if(!P.paused && P.idx < P.cues.length-1) return advanceInto(P.idx+1);
+    if(P.idx >= P.cues.length-1) return finish();
+  } else {
+    P.cueState = newCueState();
+    setStatus(P.mode==='cue' && Listener.enabled ? 'listening' : '', 
+      P.mode==='cue' && Listener.enabled ? 'Listening' : 'Your line');
+  }
+}
+
+function cueLoop(){
+  if(!P.on) return;
+  P.raf = requestAnimationFrame(cueLoop);
+  if(P.paused || P.busy) return;
+
+  const seg = P.view[P.cues[P.idx]];
+  if(!seg) return;
+  const role = S.cast[seg.speaker]?.role || 'reader';
+
+  // reader lines are driven by advanceInto(); kick the first one if needed
+  if(role==='reader' && !P.busy){ advanceInto(P.idx); return; }
+
+  // mic level on the rail
+  if(Listener.running && Listener.enabled){
+    Listener.health();
+    const th = Listener.threshold();
+    const h = Math.min(1, Listener.level / (th*2.4));
+    const el = $('#railLevel');
+    const st0 = P.cueState;
+    const armed = st0 && st0.spoke && st0.quietSince
+                  && (st0.lastLoud - st0.spokeAt) >= st0.expected * 0.90;
+    el.style.background = armed ? 'var(--brass)' : 'var(--cool)';
+    el.style.opacity = 0.9;
+    el.style.height = (h*140) + 'px';
+    el.style.top = `calc(${S.set.focus}vh - ${h*70}px)`;
+  }
+
+  if(P.mode!=='cue' || !Listener.enabled || !Listener.running) return;
+
+  const st = P.cueState; if(!st) return;
+  const now = performance.now();
+  const loud = Listener.loud();
+
+  if(loud){
+    if(!st.spoke){ st.spoke = true; st.spokeAt = now; }
+    st.lastLoud = now; st.quietSince = 0;
+  } else if(st.spoke && !st.quietSince){
+    st.quietSince = now;
+  }
+
+  // measure from the first word, not from when the line appeared - a beat
+  // before starting used to eat the whole budget
+  const spoken = st.spoke ? (st.lastLoud - st.spokeAt) : 0;
+  const quiet  = st.quietSince ? (now - st.quietSince) : 0;
+  const floor  = now - st.t0 >= 2200;         // never move within 2.2s of showing a line
+
+  // three independent ways out, so no single bad estimate can strand a line
+  const done     = quiet >= S.set.silence && spoken >= st.expected * 0.90;
+  const slowDone = quiet >= S.set.silence && (now - st.spokeAt) >= st.expected * 1.25;
+  const hardDone = quiet >= Math.max(2800, S.set.silence * 1.6);   // ignores the model entirely
+
+  if(!st.spoke && now - st.t0 > 7000) setStatus('listening', 'Waiting for you — space to move on');
+
+  if(st.spoke && floor && (done || slowDone || hardDone)){
+    learnPace(st);
+    if(P.idx >= P.cues.length-1) return finish();
+    advanceInto(P.idx+1);
+  }
+}
+
+function scrollLoop(){
+  const stage = $('#stage');
+  stage.style.transition='none';
+  P.lastT = performance.now();
+  setStatus('', 'Rolling');
+  const step = (t)=>{
+    if(!P.on) return;
+    P.raf = requestAnimationFrame(step);
+    const dt = (t - P.lastT)/1000; P.lastT = t;
+    if(P.paused) return;
+    P.scrollY += S.set.speed * dt;
+    stage.style.transform = `translateY(${focusPx() - P.scrollY}px)`;
+    const total = stage.scrollHeight || 1;
+    $('#railFill').style.height = Math.min(100,(P.scrollY/total)*100) + '%';
+  };
+  P.raf = requestAnimationFrame(step);
+}
+
+function finish(){
+  setStatus('', 'End of scene');
+  P.busy = false;
+  toast('End of scene. Press T for the top, or Done to exit.', 5000);
+}
+
+function step(delta){
+  if(P.mode==='scroll'){
+    P.scrollY += delta * window.innerHeight * 0.28;
+    return;
+  }
+  Reader.stop(); P.busy=false; Listener.gated=false;
+  const next = P.idx + delta;
+  if(next < 0) return;
+  if(next > P.cues.length-1) return finish();
+  advanceInto(next);
+}
+
+
+
+/* ============================================================
+   wiring — prompter
+   ============================================================ */
+$('#pExit').addEventListener('click', ()=>{ stopPrompter(); resizeAll(); });
+$('#pRestart').addEventListener('click',()=>{
+  Reader.stop(); P.busy=false; Listener.gated=false;
+  if(P.mode==='scroll'){ P.scrollY=0; }
+  else { P.idx=0; paintFocus(); centerOn(P.cues[0],true); P.cueState=newCueState(); advanceInto(0); }
+});
+$('#pPause').addEventListener('click',()=>{
+  P.paused=!P.paused;
+  $('#pPause').textContent = P.paused ? 'Resume' : 'Hold';
+  $('#pPause').setAttribute('aria-pressed', P.paused?'true':'false');
+  if(P.paused){ Reader.stop(); setStatus('','Holding'); }
+  else { setStatus(P.mode==='cue'&&Listener.enabled?'listening':'', P.mode==='scroll'?'Rolling':'Listening'); }
+});
+$('#pFontUp').addEventListener('click',()=>bumpFont(4));
+$('#pFontDn').addEventListener('click',()=>bumpFont(-4));
+function bumpFont(d){
+  S.set.font = Math.max(22, Math.min(140, S.set.font + d));
+  applyFont(); if(P.mode!=='scroll') centerOn(P.cues[P.idx], false); save();
+}
+$('#pMirror').addEventListener('click',()=>{
+  S.set.mirror = !S.set.mirror;
+  $('#mirrorwrap').classList.toggle('on', S.set.mirror);
+  $('#pMirror').setAttribute('aria-pressed', S.set.mirror?'true':'false'); save();
+});
+$('#pMic').addEventListener('click',()=>{
+  Listener.enabled = !Listener.enabled;
+  $('#pMic').setAttribute('aria-pressed', Listener.enabled?'true':'false');
+  $('#pMic').textContent = Listener.enabled ? 'On' : 'Off';
+  if(!Listener.enabled){ $('#railLevel').style.opacity=0; setStatus('','Press space for your cue'); }
+  else setStatus('listening','Listening');
+});
+$('#pSpeed').addEventListener('input',()=>{ S.set.speed = +$('#pSpeed').value; save(); });
+
+$('#tapz').addEventListener('click',e=>{
+  wakeChrome();
+  if(P.mode==='scroll') return;
+  step(1);
+});
+
+let chromeTimer;
+function wakeChrome(){
+  $('#chrome').classList.add('wake');
+  clearTimeout(chromeTimer);
+  chromeTimer = setTimeout(()=>$('#chrome').classList.remove('wake'), 2800);
+}
+$('#prompter').addEventListener('mousemove', wakeChrome);
+
+document.addEventListener('keydown',e=>{
+  if(!P.on) return;
+  const k = e.key;
+  if(k===' '||k==='ArrowRight'||k==='ArrowDown'||k==='PageDown'){ e.preventDefault(); step(1); wakeChrome(); }
+  else if(k==='ArrowLeft'||k==='ArrowUp'||k==='PageUp'){ e.preventDefault(); step(-1); wakeChrome(); }
+  else if(k==='Escape'){ stopPrompter(); resizeAll(); }
+  else if(k==='+'||k==='='){ bumpFont(4); }
+  else if(k==='-'||k==='_'){ bumpFont(-4); }
+  else if(k.toLowerCase()==='t'){ $('#pRestart').click(); }
+  else if(k.toLowerCase()==='m'){ $('#pMic').click(); }
+  else if(k.toLowerCase()==='p'){ $('#pPause').click(); }
+});
+
+document.addEventListener('visibilitychange', async ()=>{
+  if(document.visibilityState==='visible' && P.on && !P.wake){
+    try{ P.wake = await navigator.wakeLock?.request('screen'); }catch(e){}
+  }
+});
+window.addEventListener('resize',()=>{ if(P.on && P.mode!=='scroll') centerOn(P.cues[P.idx], false); });
+
+
+
+/* ============================================================
+   persistence
+   ============================================================ */
+let saveTimer;
+window.addEventListener('resize', resizeAll);
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) resizeAll(); });
+
+function save(){
+  clearTimeout(saveTimer);
+  saveTimer=setTimeout(()=>{
+    Store.set('sides:v2',{
+      segs:S.segs.map(s=>({...s})), cast:S.cast, set:S.set, name:S.name,
+      scripts:S.scripts, paste:$('#paste').value
+    });
+  },400);
+}
+async function boot(){
+  S.voices=await loadVoices();
+  const d=await Store.get('sides:v2');
+  if(d){
+    S.set={...DEFAULTS,...(d.set||{})};
+    S.scripts=d.scripts||[]; S.name=d.name||'';
+    if(d.paste) $('#paste').value=d.paste;
+    if(d.segs?.length){
+      S.segs=d.segs; SEQ=Math.max(...S.segs.map(s=>s.id||0))+1; S.cast=d.cast||{};
+      $('#importWrap').style.display='none'; $('#editWrap').style.display='block';
+      $('#editHint').textContent='Reassign a speaker with the dropdown, edit text inline, split a line with ⁄, delete anything that isn\u2019t dialogue.';
+      renderPages();
+    }
+  }
+  renderLib(); refresh(); refreshSettingsUI(); listDevices();
+  navigator.mediaDevices?.addEventListener?.('devicechange', listDevices);
+}
+
+const SAMPLE = `
+INT. RESTAURANT KITCHEN — LATE
+
+The line is down. Steam. One lamp still on.
+
+MARA
+You told them I signed off on it.
+
+DANIEL
+I told them the kitchen signed off on it.
+
+MARA
+The kitchen is me, Daniel. That's what the word means.
+
+DANIEL
+(beat)
+Then yes. I told them you signed off on it.
+
+MARA
+Right.
+
+DANIEL
+It was Tuesday. You were in Fresno. The truck was in the alley and
+somebody had to say a word and the word had to be yes.
+
+MARA
+And it never occurred to you to call.
+
+DANIEL
+It occurred to me.
+
+MARA
+But.
+
+DANIEL
+But I already knew what you'd say, and I didn't want to hear you say it.
+
+MARA
+That's the part I can't get past. Not the order. That.
+`;
+
+boot();
+</script>
+</body>
+</html>
