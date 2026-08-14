@@ -218,6 +218,47 @@ console.log('\nSYNC — never blocks a take, never throws, never loses local wor
   sandbox.fetch = realFetch;
 }
 
+console.log('\nSTOPPING — reported from a real take: pressing Done spoke the line again');
+{
+  /* Clip.stop() paused the audio and revoked its url, but the play in flight
+     could not tell a deliberate stop from a failure. Reader.say read that as
+     "playback failed" and fell back to the system voice - so Done, Hold and
+     Next each made the reader answer back in the Windows voice. */
+  T.Clip.el = { play:()=>new Promise(()=>{}), pause(){}, duration:NaN, volume:1 };  // never settles
+
+  const inFlight = T.Clip.play(new ArrayBuffer(8), 0.8);
+  T.Clip.stop();
+  const r = await Promise.race([ inFlight, new Promise(r=>setTimeout(()=>r('HUNG'), 4000)) ]);
+  ok('a stopped clip settles at once, not on the 20s ceiling', r !== 'HUNG');
+  ok('a stopped clip reports itself aborted', r !== 'HUNG' && r.aborted === true);
+  ok('an aborted clip is not reported as ok',  r !== 'HUNG' && r.ok === false);
+
+  // a new line supersedes the old one, and the old one must settle as aborted too
+  const first = T.Clip.play(new ArrayBuffer(8), 0.8);
+  T.Clip.play(new ArrayBuffer(8), 0.8);
+  const f = await Promise.race([ first, new Promise(r=>setTimeout(()=>r('HUNG'), 4000)) ]);
+  ok('a superseded line settles rather than dangling', f !== 'HUNG' && f.aborted === true);
+
+  /* the fallback itself: an aborted clip must NOT reach the speech engine */
+  const realPlay = T.Clip.play, realCacheGet = T.AudioCache.get;
+  let spoke = 0;
+  const realSpeech = T.Reader.sayWithSpeech;
+  T.Reader.sayWithSpeech = async ()=>{ spoke++; return { ok:true }; };
+  T.AudioCache.get = async ()=>new ArrayBuffer(8);
+  T.S.set.engine = 'openai';
+
+  T.Clip.play = async ()=>({ ok:false, aborted:true, expect:0 });
+  await T.Reader.say('A line we were told to abandon.', 'nova', '');
+  ok('THE BUG: stopping must not make the reader speak again', spoke === 0);
+
+  T.Clip.play = async ()=>({ ok:false, aborted:false, expect:0 });
+  await T.Reader.say('A line whose audio genuinely failed.', 'nova', '');
+  ok('a genuine playback failure still falls back', spoke === 1);
+
+  T.Clip.play = realPlay; T.AudioCache.get = realCacheGet;
+  T.Reader.sayWithSpeech = realSpeech; T.S.set.engine = 'elevenlabs';
+}
+
 console.log('\nEND OF SCENE — reported from a real take: the last reader line repeated forever');
 {
   const A = T.cueLoopAction;

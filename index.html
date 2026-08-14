@@ -350,6 +350,8 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%;bac
       <div class="slider"><span class="val" id="syncNote" style="text-align:left;min-width:auto;color:var(--bone-dim);font-family:var(--ui);font-size:13px"></span>
         <button class="btn ghost" id="syncNow" style="margin-left:auto">Sync now</button></div></div>
     <p class="hint" data-sync style="margin:6px 0 0;max-width:60ch">Anyone who has this code can read your scripts and your ElevenLabs key. It is a shared secret, not a login. Nothing syncs while a take is running.</p>
+
+    <p class="hint" style="margin:30px 0 0;opacity:.55">Build <span id="buildStamp"></span> — quote this when reporting anything, so we both know which version you were running.</p>
   </section>
 </div>
 
@@ -543,6 +545,10 @@ const Sync = {
   }
 };
 
+/* bump on every deploy - it is the only way to tell a stale cached app from a
+   fix that did not work, and we have already lost a round to that ambiguity */
+const BUILD = 'r5 · 2026-08-14';
+
 const DEFAULTS = { mode:'cue', silence:1600, sens:5, speed:46, font:52, focus:38,
   mirror:false, names:true, dirs:true, engine:'system', elKey:'',
   oaKey:'', oaModel:'gpt-4o-mini-tts', rate:100, vol:85, count:3, device:'' };
@@ -705,6 +711,9 @@ function castDir(speaker){
 /* ---------- player: one element, unlocked at take start, always resolves ---------- */
 const Clip = {
   el:null, url:null,
+  /* the settle function of the play in flight, so a deliberate stop can end it
+     as ABORTED rather than letting it look like a playback failure */
+  pending:null,
   unlock(){
     if(!this.el){
       this.el = new Audio();
@@ -717,6 +726,9 @@ const Clip = {
   },
   stop(){
     try{ this.el && this.el.pause(); }catch(e){}
+    // settle the play in flight as aborted BEFORE revoking the url, or the
+    // revoke fires onerror and the caller reads it as a failure worth retrying
+    if(this.pending){ const end = this.pending; this.pending = null; end(false, true); }
     if(this.url){ try{ URL.revokeObjectURL(this.url); }catch(e){} this.url = null; }
   },
   play(buf, volume){
@@ -724,14 +736,16 @@ const Clip = {
       if(!buf || !this.el) return res({ ok:false, expect:0 });
       let settled = false;
       let hard = null;
-      const done = ok => {
+      const done = (ok, aborted) => {
         if(settled) return; settled = true;
         clearTimeout(hard);
         this.el.onended = this.el.onerror = this.el.onloadedmetadata = null;
-        res({ ok, expect: 0 });
+        if(Clip.pending === done) Clip.pending = null;
+        res({ ok, aborted: !!aborted, expect: 0 });
       };
       try{
-        this.stop();
+        this.stop();            // supersedes any earlier line, settling it as aborted
+        this.pending = done;
         this.url = URL.createObjectURL(new Blob([buf], { type:'audio/mpeg' }));
         this.el.src = this.url;
         this.el.volume = Math.max(0, Math.min(1, volume));
@@ -1633,6 +1647,10 @@ const Reader = {
       if(buf){
         const r = await Clip.play(buf, S.set.vol/100);
         if(r.ok) return r;
+        /* A deliberate stop is not a failure. Falling back here meant that
+           pressing Done, Hold or Next made the line speak again in the system
+           voice - the reader answering back after being told to stop. */
+        if(r.aborted) return r;
         // fall through to the system voice rather than losing the line
       }
     }
@@ -2220,6 +2238,7 @@ async function boot(){
   S.voices=await loadVoices();
   applyState(await Store.get('sides:v2'));
   await Sync.boot();
+  const stamp=$('#buildStamp'); if(stamp) stamp.textContent = BUILD;
   renderLib(); refresh(); refreshSettingsUI(); listDevices();
   navigator.mediaDevices?.addEventListener?.('devicechange', listDevices);
 }
