@@ -287,6 +287,18 @@ console.log('\nPASTED SCRIPTS — markdown sources must not become the cast list
   // but a bare NAME: on its own line is still a cue, not a label
   const bareCue = who(`MICHAEL:\nHi, Daniel.\n\nCLIENT:\nGood to meet you.`);
   ok('a bare "NAME:" line is still a cue', bareCue.who.join() === 'MICHAEL,CLIENT');
+
+  /* (V.O.) and (CONT'D) are in practically every real set of sides, and the
+     inline pattern did not allow parentheses at all - the line was lost */
+  const vo = who(`**MICHAEL (V.O.):** Hello there.\n**CLIENT:** Hi.`);
+  ok('THE BUG: (V.O.) no longer loses the line', vo.who.join() === 'MICHAEL,CLIENT');
+  const contd = who(`**MICHAEL (CONT'D):** Still talking.\n**CLIENT:** Hi.`);
+  ok('(CONT\'D) no longer loses the line',       contd.who.join() === 'MICHAEL,CLIENT');
+  const same = who(`MICHAEL: One.\nCLIENT: Two.\nMICHAEL (CONT'D): Three.`);
+  ok('a continued cue is the same character, not a second one',
+     same.who.length === 2 && same.who.join() === 'MICHAEL,CLIENT');
+  const voBare = who(`MICHAEL (V.O.):\nHello there.\n\nCLIENT:\nHi.`);
+  ok('a bare "NAME (V.O.):" line is a cue too', voBare.who.join() === 'MICHAEL,CLIENT');
 }
 
 console.log('\nSTOPPING — reported from a real take: pressing Done spoke the line again');
