@@ -69,7 +69,8 @@ const js   = html.slice(html.indexOf('<script>')+8, html.lastIndexOf('</script>'
 vm.createContext(sandbox);
 new vm.Script(js + '\n;globalThis.__T={Reader,advanceDecision,newCueState,S,P,segsFromText,mergedView,Clip,AudioCache,clipKey,'
                  + 'Sync,stateBlob,applyState,newSyncCode,tidyCode,ensureClip,EL,'
-                 + 'OA,OA_VOICES,usesClips,engineModel,castDir,englishVoices,hashKey,EL_MODEL,pickVoice};')
+                 + 'OA,OA_VOICES,usesClips,engineModel,castDir,englishVoices,hashKey,EL_MODEL,pickVoice,'
+                 + 'cueLoopAction,finish};')
   .runInContext(sandbox);
 const T = sandbox.__T;
 
@@ -215,6 +216,43 @@ console.log('\nSYNC — never blocks a take, never throws, never loses local wor
   ok('a genuinely rejected upload still reads false',
      (await T.Sync.putClip('big', new ArrayBuffer(4))) === false);
   sandbox.fetch = realFetch;
+}
+
+console.log('\nEND OF SCENE — reported from a real take: the last reader line repeated forever');
+{
+  const A = T.cueLoopAction;
+  const P_ = (o) => Object.assign({ on:true, paused:false, busy:false, done:false }, o);
+
+  ok('mid-scene, a reader cue is spoken',   A(P_({}), 'reader') === 'speak');
+  ok('mid-scene, my own cue listens',       A(P_({}), 'me')     === 'listen');
+  ok('nothing is driven while speaking',    A(P_({busy:true}),   'reader') === 'wait');
+  ok('nothing is driven while held',        A(P_({paused:true}), 'reader') === 'wait');
+  ok('nothing is driven once exited',       A(P_({on:false}),    'reader') === 'stop');
+
+  /* the exact shape of the failure: finish() released the busy lock, so the very
+     next frame spoke the final reader cue again, and again, and again */
+  ok('THE BUG: a finished scene must not re-speak the last reader line',
+     A(P_({ done:true }), 'reader') === 'wait');
+  ok('a finished scene does not re-listen either',
+     A(P_({ done:true }), 'me') === 'wait');
+  ok('finished still wins after the busy lock clears',
+     A(P_({ done:true, busy:false }), 'reader') === 'wait');
+
+  // and the real finish() must actually set that flag
+  const realP = T.P;
+  const wasOn = realP.on, wasIdx = realP.idx;
+  realP.on = true; realP.busy = true; realP.done = false;
+  T.finish();
+  ok('finish() records that the scene ended', realP.done === true);
+  ok('finish() still releases the busy lock', realP.busy === false);
+  ok('a finished scene stops the loop dead',  A(realP, 'reader') === 'wait');
+
+  // pressing Next or Restart must re-open it, or the scene could never be replayed
+  realP.done = true;
+  ok('the flag is what blocks it', A(realP,'reader') === 'wait');
+  realP.done = false;
+  ok('clearing it lets the scene run again', A(realP,'reader') === 'speak');
+  realP.on = wasOn; realP.idx = wasIdx; realP.busy = false; realP.done = false;
 }
 
 console.log('\nENGINES — a third engine must not orphan paid-for audio');

@@ -1767,7 +1767,8 @@ const Listener = {
    ============================================================ */
 const P = {
   on:false, mode:'cue', idx:0, cues:[], els:[], paused:false,
-  wake:null, scrollY:0, lastT:0, raf:0, cueState:null, busy:false, wps:2.2, view:[]
+  wake:null, scrollY:0, lastT:0, raf:0, cueState:null, busy:false, wps:2.2, view:[],
+  done:false        // the scene has reached its end; the cue loop must stop driving it
 };
 
 /* Consecutive segments by the same speaker are one speech. Kept apart, you
@@ -1860,7 +1861,7 @@ function setStatus(kind, text){
 }
 
 async function startPrompter(){
-  P.on = true; P.mode = S.set.mode; P.idx = 0; P.paused=false; P.busy=false; P.wps = 2.2; Reader.warned=false;
+  P.on = true; P.mode = S.set.mode; P.idx = 0; P.paused=false; P.busy=false; P.done=false; P.wps = 2.2; Reader.warned=false;
   $('#prompter').classList.add('on');
   $('#mirrorwrap').classList.toggle('on', S.set.mirror);
   $('#pMirror').setAttribute('aria-pressed', S.set.mirror?'true':'false');
@@ -1948,6 +1949,7 @@ async function runLoop(){
 
 async function advanceInto(i){
   if(!P.on) return;
+  P.done = false;   // any deliberate move re-opens the scene; finish() closes it again
   P.idx = Math.max(0, Math.min(i, P.cues.length-1));
   paintFocus();
   centerOn(P.cues[P.idx]);
@@ -2000,17 +2002,28 @@ function advanceDecision(st, now, silence){
   return null;
 }
 
+/* Pure, like advanceDecision: what should the cue loop do with this frame?
+   Kept pure because the end-of-scene case ran the last line forever - finish()
+   cleared the busy lock without recording that the scene had ended, so the loop
+   simply spoke the final reader cue again on the very next frame. */
+function cueLoopAction(p, role){
+  if(!p.on) return 'stop';
+  if(p.paused || p.busy || p.done) return 'wait';
+  return role === 'reader' ? 'speak' : 'listen';
+}
+
 function cueLoop(){
   if(!P.on) return;
   P.raf = requestAnimationFrame(cueLoop);
-  if(P.paused || P.busy) return;
 
   const seg = P.view[P.cues[P.idx]];
   if(!seg) return;
   const role = S.cast[seg.speaker]?.role || 'reader';
+  const act = cueLoopAction(P, role);
+  if(act !== 'speak' && act !== 'listen') return;
 
   // reader lines are driven by advanceInto(); kick the first one if needed
-  if(role==='reader' && !P.busy){ advanceInto(P.idx); return; }
+  if(act === 'speak'){ advanceInto(P.idx); return; }
 
   // mic level on the rail
   if(Listener.running && Listener.enabled){
@@ -2073,6 +2086,7 @@ function scrollLoop(){
 function finish(){
   setStatus('', 'End of scene');
   P.busy = false;
+  P.done = true;   // without this the cue loop speaks the last reader line forever
   toast('End of scene. Press T for the top, or Done to exit.', 5000);
 }
 
