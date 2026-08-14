@@ -556,7 +556,7 @@ const Sync = {
 
 /* bump on every deploy - it is the only way to tell a stale cached app from a
    fix that did not work, and we have already lost a round to that ambiguity */
-const BUILD = 'r8 · 2026-08-14';
+const BUILD = 'r9 · 2026-08-14';
 
 const DEFAULTS = { mode:'cue', silence:1600, sens:5, speed:46, font:52, focus:38,
   mirror:false, names:true, dirs:true, engine:'system', elKey:'',
@@ -1010,8 +1010,13 @@ function parseStructural(pageLines){
       if(cur) push(cur, t, 'paren', page); else push(null, t, 'dir', page);
       return;
     }
+    /* a bulleted or quoted line is list or quoted material, never a speech, so
+       it can never introduce a character - this is what stopped "- Learn: ask
+       for an explanation..." arriving in the cast as LEARN */
+    const listy = !!l.listy;
+
     const n = nameOf(t);
-    if(n && i + 1 < arr.length && !nameOf(arr[i+1].line.text)){
+    if(n && !listy && i + 1 < arr.length && !nameOf(arr[i+1].line.text)){
       cur = n; close(); return;
     }
     /* "NAME: dialogue" on one line - transcripts, plays, and session scripts.
@@ -1026,7 +1031,7 @@ function parseStructural(pageLines){
          part of the cue, not part of the name, and nameOf folds them away so
          MICHAEL and MICHAEL (V.O.) stay one character */
       const plain = m[1].replace(/\s*\([^)]*\)\s*$/, '').trim().split(/\s+/);
-      if(nm && plain.length <= 4 && plain.every(w => /^[A-Z0-9]/.test(w))){
+      if(nm && !listy && plain.length <= 4 && plain.every(w => /^[A-Z0-9]/.test(w))){
         cur = nm; close(); push(cur, m[2], 'line', page); return;
       }
     }
@@ -1042,7 +1047,11 @@ function parseStructural(pageLines){
     if(bare !== t && bare){
       const bw = bare.replace(/\s*\([^)]*\)\s*$/, '').trim().split(/\s+/);
       const nm = bw.length <= 4 && bw.every(w=>/^[A-Z0-9]/.test(w)) ? nameOf(bare.toUpperCase()) : null;
-      if(nm){ cur = nm; close(); return; }            // "MICHAEL:" alone is a cue
+      /* what follows decides it: a cue introduces a spoken line, whereas
+         "Prompt:" introduces quoted material. Without this, every "Prompt:"
+         above a block quote became a character with lines to be read aloud. */
+      const quotedNext = !!(arr[i+1] && arr[i+1].line.listy);
+      if(nm && !listy && !quotedNext){ cur = nm; close(); return; }   // "MICHAEL:" alone is a cue
       close(); push(null, t, 'dir', page); return;    // "Prompt to enter:" is a label
     }
 
@@ -1113,10 +1122,15 @@ function segsFromText(raw){
   let block = [];
   // blank lines are meaningful in pasted text; parseStructural ignores them, so
   // run it per block and reset the speaker between blocks
-  stripMarkdown(raw).split('\n').forEach(t => {
-    const text = t.trim();
+  /* Whether a line was a bullet, a numbered item or a quote is recorded BEFORE
+     the markers are stripped. It is the only honest way to tell "Prompt:" from
+     "MARA:" - as words they are identical, but quoted material is not dialogue
+     and a list item is not a speech. */
+  String(raw||'').replace(/\r/g,'').split('\n').forEach(rawLine => {
+    const listy = /^\s*(?:[-+*]\s+|\d+[.)]\s+|>\s?)/.test(rawLine);
+    const text = stripMarkdown(rawLine).trim();
     if(!text){ if(block.length){ blocks.push(block); block = []; } }
-    else block.push({ line:{ text, left:0, right:text.length, center:text.length/2 }, page:1 });
+    else block.push({ line:{ text, left:0, right:text.length, center:text.length/2, listy }, page:1 });
   });
   if(block.length) blocks.push(block);
 

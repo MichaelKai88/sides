@@ -299,6 +299,22 @@ console.log('\nPASTED SCRIPTS — markdown sources must not become the cast list
      same.who.length === 2 && same.who.join() === 'MICHAEL,CLIENT');
   const voBare = who(`MICHAEL (V.O.):\nHello there.\n\nCLIENT:\nHi.`);
   ok('a bare "NAME (V.O.):" line is a cue too', voBare.who.join() === 'MICHAEL,CLIENT');
+
+  /* Reported from the real Cast screen: PROMPT and LEARN turned up as
+     characters. A single capitalised word is indistinguishable from a name, so
+     the discriminator has to be structural - quoted material is not dialogue,
+     and a list item is not a speech. */
+  const promptLabel = who(`**MICHAEL:** One.\n**Prompt:**\n> Compare a Taos day trip with a slower day in Santa Fe.\n**CLIENT:** Two.`);
+  ok('THE BUG: "Prompt:" above a quote is not a character', promptLabel.who.indexOf('PROMPT') === -1);
+  ok('and the real speakers survive it', promptLabel.who.join() === 'MICHAEL,CLIENT');
+
+  const learnLabel = who(`**MICHAEL:** You can use AI to:\n- **Learn:** ask for an explanation at your level.\n- **Write** something: an email or a first draft.\n**CLIENT:** Two.`);
+  ok('THE BUG: a bulleted "Learn:" is not a character', learnLabel.who.indexOf('LEARN') === -1);
+  ok('nor is any other bulleted label',  learnLabel.who.join() === 'MICHAEL,CLIENT');
+
+  // but a genuine cue above genuine dialogue is untouched
+  const realCue = who(`MARA:\nYou told them I signed off on it.\n\nDANIEL:\nI told them the kitchen did.`);
+  ok('a real cue above real dialogue still works', realCue.who.join() === 'MARA,DANIEL');
 }
 
 console.log('\nSTOPPING — reported from a real take: pressing Done spoke the line again');
