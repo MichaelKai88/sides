@@ -314,12 +314,22 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%;bac
       <select id="setEngine">
         <option value="system">This device's built-in voices — free, offline</option>
         <option value="elevenlabs">ElevenLabs — studio quality, needs a key</option>
+        <option value="openai">OpenAI — pay per use, no subscription</option>
       </select></div>
     <div class="field" data-el><label for="setKey">ElevenLabs API key</label>
       <div class="slider"><input type="password" id="setKey" placeholder="sk_…"
         style="flex:1;background:var(--pit);border:1px solid var(--edge);border-radius:2px;padding:8px 10px;font-family:var(--mono);font-size:12px">
         <button class="btn ghost" id="checkKey">Check</button></div></div>
-    <div class="field" data-el><label>Stored audio</label>
+    <div class="field" data-oa><label for="setOaKey">OpenAI API key</label>
+      <div class="slider"><input type="password" id="setOaKey" placeholder="sk-proj-…"
+        style="flex:1;background:var(--pit);border:1px solid var(--edge);border-radius:2px;padding:8px 10px;font-family:var(--mono);font-size:12px">
+        <button class="btn ghost" id="checkOaKey">Check</button></div></div>
+    <div class="field" data-oa><label for="setOaModel">OpenAI voice model</label>
+      <select id="setOaModel">
+        <option value="gpt-4o-mini-tts">Steerable — takes a direction per character</option>
+        <option value="tts-1">Plain — cheapest, ignores directions</option>
+      </select></div>
+    <div class="field" data-clips><label>Stored audio</label>
       <div class="slider"><span class="val" id="cacheNote" style="text-align:left;min-width:auto;color:var(--bone-dim);font-family:var(--ui);font-size:13px"></span>
         <button class="btn ghost danger" id="clearCache" style="margin-left:auto">Clear it</button></div></div>
     <div class="field"><label for="setRate">Reader pace</label>
@@ -534,7 +544,8 @@ const Sync = {
 };
 
 const DEFAULTS = { mode:'cue', silence:1600, sens:5, speed:46, font:52, focus:38,
-  mirror:false, names:true, dirs:true, engine:'system', elKey:'', rate:100, vol:85, count:3, device:'' };
+  mirror:false, names:true, dirs:true, engine:'system', elKey:'',
+  oaKey:'', oaModel:'gpt-4o-mini-tts', rate:100, vol:85, count:3, device:'' };
 const S = { segs:[], cast:{}, set:{...DEFAULTS}, voices:[], step:0, pages:[], scripts:[], name:'', showTrim:false, fileHint:'', elVoices:[] };
 let SEQ = 1;
 
@@ -628,8 +639,67 @@ const EL = {
   }
 };
 
-function clipKey(voiceId, text){
-  return hashKey(`${EL_MODEL}|${voiceId}|${String(text).trim()}`);
+/* ---------- OpenAI: pay per use, no subscription, steerable delivery ---------- */
+const OA_API = 'https://api.openai.com/v1';
+/* There is no voices endpoint - the list is fixed, so it is hard-coded rather
+   than fetched. marin and cedar are OpenAI's own quality recommendations. */
+const OA_VOICES = [
+  ['marin','warm — recommended'], ['cedar','even — recommended'], ['alloy','neutral'],
+  ['ash','firm'],    ['ballad','lyrical'], ['coral','bright'],  ['echo','flat'],
+  ['fable','storyteller'], ['onyx','deep'], ['nova','young'],   ['sage','measured'],
+  ['shimmer','light'], ['verse','expressive'],
+];
+const OA = {
+  voices(){ return OA_VOICES.map(([id,desc])=>({ voiceURI:id, name:id[0].toUpperCase()+id.slice(1), lang:desc })); },
+  async check(key){
+    const r = await fetch(`${OA_API}/models`, { headers:{ Authorization:`Bearer ${key}` } });
+    if(!r.ok) throw new Error(r.status === 401 ? 'That key was rejected.'
+                            : r.status === 429 ? 'That account is out of credit.'
+                            : `OpenAI returned ${r.status}.`);
+    return true;
+  },
+  async synth(key, voiceId, text, instructions){
+    /* caps are 4096 chars (tts-1) and 2000 tokens (gpt-4o-mini-tts); a single
+       side never approaches either, so refuse loudly rather than truncate a line */
+    if(String(text).length > 3800) throw new Error('That line is too long for one request');
+    const body = { model:S.set.oaModel, input:text, voice:voiceId, response_format:'mp3' };
+    if(instructions && S.set.oaModel !== 'tts-1') body.instructions = instructions;
+    const r = await fetch(`${OA_API}/audio/speech`, {
+      method:'POST',
+      headers:{ Authorization:`Bearer ${key}`, 'Content-Type':'application/json' },
+      body: JSON.stringify(body)
+    });
+    if(!r.ok){
+      let msg = `OpenAI returned ${r.status}`;
+      if(r.status === 401) msg = 'Key rejected';
+      if(r.status === 400) msg = 'That line was refused';
+      if(r.status === 429) msg = 'Rate limited, or the account is out of credit';
+      throw new Error(msg);
+    }
+    return await r.arrayBuffer();
+  }
+};
+
+/* Content address for one clip. The default arguments reproduce the original
+   ElevenLabs key byte for byte, so adding a second engine orphans nothing that
+   has already been paid for - on this device or in the shared bucket. */
+function clipKey(voiceId, text, model, instructions){
+  const base = `${model || EL_MODEL}|${voiceId}|${String(text).trim()}`;
+  return hashKey(instructions ? `${base}|${instructions}` : base);
+}
+/* both generated engines share the cache, the player and the bucket */
+function usesClips(){ return S.set.engine==='elevenlabs' || S.set.engine==='openai'; }
+/* Voice ids do not carry across engines. Switching engines used to leave the old
+   id in place while the dropdown showed the first option as if it were selected,
+   so the take was prepared against a voice the new engine has never heard of. */
+function pickVoice(current, list){
+  if(!list.length) return current;
+  return list.some(v=>v.voiceURI===current) ? current : list[0].voiceURI;
+}
+function engineModel(){ return S.set.engine==='openai' ? S.set.oaModel : EL_MODEL; }
+/* a per-character delivery note, folded into the clip key so changing it regenerates */
+function castDir(speaker){
+  return (S.set.engine==='openai' && S.set.oaModel!=='tts-1') ? (S.cast[speaker]?.dir || '') : '';
 }
 
 /* ---------- player: one element, unlocked at take start, always resolves ---------- */
@@ -995,6 +1065,7 @@ function loadVoices(){
   });
 }
 function englishVoices(){
+  if(S.set.engine==='openai') return OA.voices();
   if(S.set.engine==='elevenlabs' && S.elVoices.length) return S.elVoices;
   const en=S.voices.filter(v=>/^en/i.test(v.lang)); return en.length?en:S.voices;
 }
@@ -1141,6 +1212,8 @@ function renderCast(){
     const extra=document.createElement('div'); extra.className='cast-extra';
     if(c.role==='reader'){
       const lab=document.createElement('label'); lab.textContent='Voice';
+      const fixed = pickVoice(c.voice, ev);
+      if(fixed !== c.voice){ c.voice = fixed; save(); }
       const sel=document.createElement('select');
       if(!ev.length){ const o=document.createElement('option'); o.textContent='No voices on this device'; sel.appendChild(o); sel.disabled=true; }
       ev.forEach(v=>{ const o=document.createElement('option'); o.value=v.voiceURI; o.textContent=`${v.name} (${v.lang})`;
@@ -1150,14 +1223,25 @@ function renderCast(){
       test.addEventListener('click', async ()=>{
         const l=S.segs.find(s=>s.speaker===name&&s.kind==='line'&&!s.out);
         const line = l?l.text:`This is ${name}.`;
-        if(S.set.engine==='elevenlabs'){
+        if(usesClips()){
           test.textContent='…';
-          try{ await ensureClip(c.voice, line); }catch(e){ toast(e.message,4500); }
+          try{ await ensureClip(c.voice, line, castDir(name)); }catch(e){ toast(e.message,4500); }
           test.textContent='Hear it';
         }
-        Clip.unlock(); Reader.say(line, c.voice);
+        Clip.unlock(); Reader.say(line, c.voice, castDir(name));
       });
       extra.append(lab,sel,test);
+      /* a plain text field, deliberately - see how it reads before building more */
+      if(S.set.engine==='openai' && S.set.oaModel!=='tts-1'){
+        const dl=document.createElement('label'); dl.textContent='Direction';
+        const di=document.createElement('input'); di.type='text';
+        di.placeholder='e.g. clipped and impatient';
+        di.value = c.dir || '';
+        di.style.cssText='flex:1;min-width:200px;background:var(--pit);border:1px solid var(--edge);'
+                       + 'border-radius:2px;padding:6px 9px;font-size:12.5px';
+        di.addEventListener('change',()=>{ c.dir = di.value.trim(); save(); });
+        extra.append(dl,di);
+      }
     }
     const others=list.map(x=>x[0]).filter(n=>n!==name);
     if(others.length){
@@ -1179,7 +1263,11 @@ function renderCast(){
   });
   const n=englishVoices().length;
   $('#voiceNote').textContent =
-    S.set.engine==='elevenlabs'
+    S.set.engine==='openai'
+      ? (S.set.oaKey
+          ? `${OA_VOICES.length} OpenAI voices — pay per use, roughly three cents a script. Lines are generated once before the take and kept on this device.`
+          : 'Add your OpenAI key under Setup. The voice list is fixed, so there is nothing to load.')
+    : S.set.engine==='elevenlabs'
       ? (S.elVoices.length
           ? `${S.elVoices.length} ElevenLabs voices. Lines are generated once before the take and kept on this device, so a rerun costs nothing.`
           : 'Add your ElevenLabs key under Setup, then press Check to load the voices.')
@@ -1358,6 +1446,17 @@ $('#setEngine').addEventListener('change',()=>{
 });
 $('#setKey').addEventListener('change',()=>{ S.set.elKey=$('#setKey').value.trim(); save(); });
 $('#checkKey').addEventListener('click', checkKey);
+$('#setOaKey').addEventListener('change',()=>{ S.set.oaKey=$('#setOaKey').value.trim(); save(); });
+$('#checkOaKey').addEventListener('click', checkOaKey);
+$('#setOaModel').addEventListener('change',()=>{ S.set.oaModel=$('#setOaModel').value; renderCast(); save(); });
+async function checkOaKey(){
+  const key=$('#setOaKey').value.trim(); S.set.oaKey=key; save();
+  if(!key) return toast('Paste your OpenAI key first.');
+  toast('Checking the key…');
+  try{ await OA.check(key); toast(`Key works — ${OA_VOICES.length} voices ready.`); renderCast(); }
+  catch(e){ toast(e.message.includes('Failed to fetch')
+      ? 'Could not reach OpenAI. Check your connection.' : e.message, 5000); }
+}
 $('#clearCache').addEventListener('click', async ()=>{
   await AudioCache.clear(); cacheNote(); toast('Stored reader audio cleared.');
 });
@@ -1425,6 +1524,10 @@ function refreshSettingsUI(){
   $('#setEngine').value = S.set.engine;
   $('#setKey').value = S.set.elKey || '';
   $$('[data-el]').forEach(f=>{ f.style.display = S.set.engine==='elevenlabs' ? '' : 'none'; });
+  $('#setOaKey').value = S.set.oaKey || '';
+  $('#setOaModel').value = S.set.oaModel;
+  $$('[data-oa]').forEach(f=>{ f.style.display = S.set.engine==='openai' ? '' : 'none'; });
+  $$('[data-clips]').forEach(f=>{ f.style.display = usesClips() ? '' : 'none'; });
   $('#setSync').setAttribute('aria-pressed', Sync.on ? 'true' : 'false');
   $('#setCode').value = Sync.code || '';
   $$('[data-sync]').forEach(f=>{ f.style.display = Sync.on ? '' : 'none'; });
@@ -1443,16 +1546,18 @@ async function listDevices(){
 }
 function readerText(t){ return String(t||'').replace(/\([^)]*\)/g,' ').replace(/\s+/g,' ').trim(); }
 
-async function ensureClip(voiceId, text){
+async function ensureClip(voiceId, text, instructions){
   const clean = readerText(text);
   if(!clean || !voiceId) return false;
-  const k = clipKey(voiceId, clean);
+  const k = clipKey(voiceId, clean, engineModel(), instructions);
   if(await AudioCache.get(k)) return true;
   /* local -> the bucket -> pay for it. clipKey is a content address, so a clip
      the other device already generated is byte-for-byte the one we want. */
   const had = await Sync.getClip(k);
   if(had){ await AudioCache.put(k, had); return true; }
-  const buf = await EL.synth(S.set.elKey, voiceId, clean);
+  const buf = S.set.engine==='openai'
+    ? await OA.synth(S.set.oaKey, voiceId, clean, instructions)
+    : await EL.synth(S.set.elKey, voiceId, clean);
   await AudioCache.put(k, buf);
   // deliberately not awaited - an upload must not hold up a take - and never
   // allowed to reject: an unhandled rejection here would surface mid-preparation
@@ -1465,13 +1570,17 @@ async function ensureClip(voiceId, text){
 async function prepareReader(){
   const lines = S.segs.filter(s=>s.kind==='line' && !s.out && S.cast[s.speaker]?.role==='reader');
   if(!lines.length) return true;
-  if(!S.set.elKey){ toast('Add your ElevenLabs key under Setup first.', 4500); goStep(2); return false; }
+  const oa = S.set.engine==='openai';
+  if(oa ? !S.set.oaKey : !S.set.elKey){
+    toast(`Add your ${oa?'OpenAI':'ElevenLabs'} key under Setup first.`, 4500); goStep(2); return false;
+  }
 
   const todo = [];
   for(const l of lines){
     const v = S.cast[l.speaker]?.voice; if(!v) continue;
     const clean = readerText(l.text); if(!clean) continue;
-    if(!(await AudioCache.get(clipKey(v, clean)))) todo.push({ v, clean });
+    const dir = castDir(l.speaker);
+    if(!(await AudioCache.get(clipKey(v, clean, engineModel(), dir)))) todo.push({ v, clean, dir });
   }
   if(!todo.length){ cacheNote(); return true; }
 
@@ -1480,7 +1589,7 @@ async function prepareReader(){
   for(let i=0;i<todo.length;i++){
     note.textContent = `Preparing the reader — ${i+1} of ${todo.length}`;
     btn.textContent = 'Preparing…';
-    try{ await ensureClip(todo[i].v, todo[i].clean); }
+    try{ await ensureClip(todo[i].v, todo[i].clean, todo[i].dir); }
     catch(e){
       btn.disabled=false; btn.textContent=was; updateLaunch();
       toast(`${e.message}. The take will use this device's voices instead.`, 6000);
@@ -1494,7 +1603,7 @@ async function prepareReader(){
 $('#btnRun').addEventListener('click', async ()=>{
   if(!S.segs.some(s=>s.kind==='line'&&!s.out)) return;
   Clip.unlock();                       // must happen inside the click for iOS
-  if(S.set.engine==='elevenlabs'){ if(!(await prepareReader())) return; }
+  if(usesClips()){ if(!(await prepareReader())) return; }
   await startPrompter();
 });
 
@@ -1516,11 +1625,11 @@ const Reader = {
   },
   /* Resolves {ok} ALWAYS. A hard ceiling is armed before we attempt to speak,
      so no failure mode inside the speech engine can leave the take stalled. */
-  async say(text, voiceURI){
+  async say(text, voiceURI, dir){
     // a pre-generated clip is just an audio file - none of the speech engine's
     // failure modes exist on this path
-    if(S.set.engine === 'elevenlabs' && voiceURI){
-      const buf = await AudioCache.get(clipKey(voiceURI, String(text||'').replace(/\([^)]*\)/g,' ').replace(/\s+/g,' ').trim()));
+    if(usesClips() && voiceURI){
+      const buf = await AudioCache.get(clipKey(voiceURI, readerText(text), engineModel(), dir));
       if(buf){
         const r = await Clip.play(buf, S.set.vol/100);
         if(r.ok) return r;
@@ -1853,7 +1962,7 @@ async function advanceInto(i){
     try{
       await new Promise(r=>setTimeout(r,260));
       if(!P.on) return;
-      const r = await Reader.say(seg.text, S.cast[seg.speaker]?.voice);
+      const r = await Reader.say(seg.text, S.cast[seg.speaker]?.voice, castDir(seg.speaker));
       if(!P.on) return;
       if(!r.ok){
         // hold the beat so the scene keeps its rhythm on camera

@@ -68,7 +68,8 @@ const html = fs.readFileSync('./index.html','utf8');
 const js   = html.slice(html.indexOf('<script>')+8, html.lastIndexOf('</script>'));
 vm.createContext(sandbox);
 new vm.Script(js + '\n;globalThis.__T={Reader,advanceDecision,newCueState,S,P,segsFromText,mergedView,Clip,AudioCache,clipKey,'
-                 + 'Sync,stateBlob,applyState,newSyncCode,tidyCode,ensureClip,EL};')
+                 + 'Sync,stateBlob,applyState,newSyncCode,tidyCode,ensureClip,EL,'
+                 + 'OA,OA_VOICES,usesClips,engineModel,castDir,englishVoices,hashKey,EL_MODEL,pickVoice};')
   .runInContext(sandbox);
 const T = sandbox.__T;
 
@@ -214,6 +215,61 @@ console.log('\nSYNC — never blocks a take, never throws, never loses local wor
   ok('a genuinely rejected upload still reads false',
      (await T.Sync.putClip('big', new ArrayBuffer(4))) === false);
   sandbox.fetch = realFetch;
+}
+
+console.log('\nENGINES — a third engine must not orphan paid-for audio');
+{
+  const line = 'Hello there.';
+  /* the exact string the one-engine build hashed - if this ever changes, every
+     clip already generated and every object in the bucket is orphaned */
+  ok('an ElevenLabs key is byte-identical to the old scheme',
+     T.clipKey('v1', line) === T.hashKey(`${T.EL_MODEL}|v1|${line}`));
+  ok('passing the ElevenLabs model explicitly changes nothing',
+     T.clipKey('v1', line) === T.clipKey('v1', line, T.EL_MODEL));
+  ok('an empty direction changes nothing',
+     T.clipKey('v1', line) === T.clipKey('v1', line, T.EL_MODEL, ''));
+
+  ok('a different model is a different clip',
+     T.clipKey('v1', line, 'gpt-4o-mini-tts') !== T.clipKey('v1', line));
+  ok('a direction is a different clip',
+     T.clipKey('nova', line, 'gpt-4o-mini-tts', 'clipped') !== T.clipKey('nova', line, 'gpt-4o-mini-tts'));
+  ok('changing the direction regenerates',
+     T.clipKey('nova', line, 'gpt-4o-mini-tts', 'clipped') !== T.clipKey('nova', line, 'gpt-4o-mini-tts', 'warm'));
+  ok('the same direction reuses',
+     T.clipKey('nova', line, 'gpt-4o-mini-tts', 'clipped') === T.clipKey('nova', line, 'gpt-4o-mini-tts', 'clipped'));
+
+  T.S.set.engine = 'system';
+  ok('system engine does not use clips', T.usesClips() === false);
+  T.S.set.engine = 'elevenlabs';
+  ok('elevenlabs uses clips',            T.usesClips() === true && T.engineModel() === T.EL_MODEL);
+  T.S.set.engine = 'openai';
+  ok('openai uses clips',                T.usesClips() === true);
+  ok('openai reports its own model',     T.engineModel() === 'gpt-4o-mini-tts');
+  ok('openai offers 13 fixed voices',    T.englishVoices().length === 13 && T.OA_VOICES.length === 13);
+  ok('every openai voice has an id',     T.englishVoices().every(v=>!!v.voiceURI && !!v.name));
+
+  T.S.cast = { MARA:{ role:'reader', voice:'nova', dir:'clipped and impatient' } };
+  ok('a direction reaches the clip key', T.castDir('MARA') === 'clipped and impatient');
+  T.S.set.oaModel = 'tts-1';
+  ok('tts-1 ignores directions (it has no instructions field)', T.castDir('MARA') === '');
+  T.S.set.oaModel = 'gpt-4o-mini-tts';
+  ok('an unknown speaker has no direction', T.castDir('NOBODY') === '');
+
+  /* found in the browser, not here: switching engines left a system voice id in
+     the cast while the dropdown showed the first option as selected */
+  const oaList = T.OA.voices();
+  ok('a stale system voice is replaced when the engine changes',
+     T.pickVoice('Microsoft David - English (United States)', oaList) === 'marin');
+  ok('a valid voice is left alone',      T.pickVoice('nova', oaList) === 'nova');
+  ok('an empty cast slot gets a voice',  T.pickVoice('', oaList) === 'marin');
+  ok('no voices means no change',        T.pickVoice('whatever', []) === 'whatever');
+
+  // a line beyond the request cap must refuse, not truncate: a silently shortened
+  // line would be discovered mid-take
+  let refused = false;
+  try{ await T.OA.synth('sk-x','nova','x'.repeat(4200)); }catch(e){ refused = /too long/.test(e.message); }
+  ok('an over-long line is refused, not truncated', refused === true);
+  T.S.set.engine = 'elevenlabs'; T.S.set.oaModel = 'gpt-4o-mini-tts';
 }
 
 console.log('\nCLIP RESOLUTION — the order that decides whether a line is paid for twice');
