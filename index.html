@@ -60,11 +60,15 @@ h2.sec{font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;color:var(
 .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:16px}
 
 /* import */
-#drop{border:1px dashed var(--edge-lit);border-radius:3px;padding:44px 24px;text-align:center;
+/* the two ways in carry equal weight - paste used to be a small text button
+   under a large drop zone, and went unnoticed */
+#ways{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:640px){#ways{grid-template-columns:1fr}}
+#drop,#pasteWay{border:1px dashed var(--edge-lit);border-radius:3px;padding:44px 24px;text-align:center;
   transition:border-color .2s,background .2s;cursor:pointer}
-#drop:hover,#drop.over{border-color:var(--brass);background:var(--brass-wash)}
-#drop .big{font-family:var(--script);font-size:21px;margin-bottom:6px}
-#drop .sm{font-size:13px;color:var(--bone-faint)}
+#drop:hover,#drop.over,#pasteWay:hover,#pasteWay.on{border-color:var(--brass);background:var(--brass-wash)}
+#drop .big,#pasteWay .big{font-family:var(--script);font-size:21px;margin-bottom:6px}
+#drop .sm,#pasteWay .sm{font-size:13px;color:var(--bone-faint)}
 #pasteWrap{display:none;margin-top:20px}
 #paste{width:100%;min-height:260px;background:var(--pit);border:1px solid var(--edge);border-radius:3px;
   padding:18px 20px;font-family:var(--script);font-size:16px;line-height:1.7;resize:vertical;color:var(--bone)}
@@ -234,13 +238,18 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%;bac
 
     <div id="importWrap">
       <h2 class="sec">Bring in the sides</h2>
-      <div id="drop">
-        <div class="big">Drop a PDF here</div>
-        <div class="sm">or click to choose one — the pages stay on this device</div>
+      <div id="ways">
+        <div id="drop">
+          <div class="big">Drop a file here</div>
+          <div class="sm">PDF, .txt or .fountain — or click to choose one. It stays on this device.</div>
+        </div>
+        <div id="pasteWay" role="button" tabindex="0">
+          <div class="big">Paste the text</div>
+          <div class="sm">From Notion, an email, anywhere — bold and bullets are fine.</div>
+        </div>
       </div>
-      <input type="file" id="file" accept="application/pdf" hidden>
+      <input type="file" id="file" accept="application/pdf,.pdf,.txt,.fountain,.fdx,text/plain" hidden>
       <div class="row">
-        <button class="btn ghost" id="togglePaste">Paste text instead</button>
         <button class="btn ghost" id="loadSample">Load a sample scene</button>
       </div>
       <div id="busy"></div>
@@ -547,7 +556,7 @@ const Sync = {
 
 /* bump on every deploy - it is the only way to tell a stale cached app from a
    fix that did not work, and we have already lost a round to that ambiguity */
-const BUILD = 'r5 · 2026-08-14';
+const BUILD = 'r6 · 2026-08-14';
 
 const DEFAULTS = { mode:'cue', silence:1600, sens:5, speed:46, font:52, focus:38,
   mirror:false, names:true, dirs:true, engine:'system', elKey:'',
@@ -1048,19 +1057,55 @@ function segsFromPages(pages){
   return { segs: stitchParens(all), regime: centeredCount > pages.length/2 ? 'centered' : 'aligned' };
 }
 
+/* Pasted script sources (Notion especially) carry markdown markers as literal
+   characters. They broke two things: a bold cue "**MARA**" became a character
+   called "**MARA", and emphasis inside dialogue was handed to the voice, which
+   reads the asterisks. Deliberately line-based and conservative - this only
+   removes markers, never reflows or reorders anything. */
+function stripMarkdown(raw){
+  return String(raw||'').replace(/\r/g,'').split('\n').map(l=>{
+    let s = l;
+    s = s.replace(/^\s{0,3}#{1,6}\s+/, '');            // # heading
+    s = s.replace(/^\s{0,3}>\s?/, '');                 // > quote
+    s = s.replace(/^(\s*)[-+]\s+/, '$1');              // - bullet
+    s = s.replace(/^(\s*)\d+[.)]\s+/, '$1');           // 1. numbered
+    s = s.replace(/\*\*\*([^*\n]+)\*\*\*/g, '$1');     // ***both***
+    s = s.replace(/\*\*([^*\n]+)\*\*/g, '$1');         // **bold**
+    s = s.replace(/__([^_\n]+)__/g, '$1');             // __bold__
+    s = s.replace(/\*([^*\n]+)\*/g, '$1');             // *italic*
+    s = s.replace(/~~([^~\n]+)~~/g, '$1');             // ~~strike~~
+    s = s.replace(/`([^`\n]+)`/g, '$1');               // `code`
+    s = s.replace(/\[([^\]\n]+)\]\([^)\n]*\)/g, '$1'); // [text](link)
+    return s;
+  }).join('\n');
+}
+
 function segsFromText(raw){
-  const lines = raw.replace(/\r/g,'').split('\n').map(t => ({
-    line: { text: t.trim(), left: 0, right: t.length, center: t.length/2 }, page: 1
-  }));
-  const out = [];
+  const blocks = [];
   let block = [];
   // blank lines are meaningful in pasted text; parseStructural ignores them, so
   // run it per block and reset the speaker between blocks
-  lines.forEach(x => {
-    if(!x.line.text){ if(block.length){ out.push(...parseStructural(block)); block = []; } }
-    else block.push(x);
+  stripMarkdown(raw).split('\n').forEach(t => {
+    const text = t.trim();
+    if(!text){ if(block.length){ blocks.push(block); block = []; } }
+    else block.push({ line:{ text, left:0, right:text.length, center:text.length/2 }, page:1 });
   });
-  if(block.length) out.push(...parseStructural(block));
+  if(block.length) blocks.push(block);
+
+  /* Notion gives every paragraph its own block, so a character cue and its
+     dialogue arrive separated by a blank line. The speaker was reset between
+     them and the entire script came out as stage direction with no cast at
+     all. A block that is nothing but a cue belongs to the block after it. */
+  const joined = [];
+  for(let i=0; i<blocks.length; i++){
+    if(blocks[i].length === 1 && blocks[i+1] && nameOf(blocks[i][0].line.text)){
+      joined.push(blocks[i].concat(blocks[i+1]));
+      i++;
+    } else joined.push(blocks[i]);
+  }
+
+  const out = [];
+  joined.forEach(b => out.push(...parseStructural(b)));
   return { segs: stitchParens(out), regime: 'text' };
 }
 
@@ -1332,17 +1377,43 @@ async function importPdf(file){
   }
 }
 
+/* .txt and .fountain are plain text into the same parser as a paste - fountain
+   is the plain-text screenplay standard and needs no separate handling */
+const TEXT_FILE = /\.(txt|fountain|fdx|md|markdown)$/i;
+
+function importFile(f){
+  if(!f) return;
+  if(/\.pdf$/i.test(f.name) || f.type === 'application/pdf') return importPdf(f);
+  if(TEXT_FILE.test(f.name) || /^text\//.test(f.type || '')){
+    const r = new FileReader();
+    r.onload = ()=>{
+      openPaste(true);
+      $('#paste').value = String(r.result || '');
+      S.fileHint = f.name.replace(/\.[^.]+$/,'');
+      $('#doParse').click();
+    };
+    r.onerror = ()=> toast('That file could not be read.', 4200);
+    r.readAsText(f);
+    return;
+  }
+  toast('Bring in a PDF, a .txt or a .fountain — or paste the text.', 4600);
+}
+
+function openPaste(on){
+  $('#pasteWrap').style.display = on ? 'block' : 'none';
+  $('#pasteWay').classList.toggle('on', !!on);
+  if(on) $('#paste').focus();
+}
+
 $('#drop').addEventListener('click',()=>$('#file').click());
-$('#file').addEventListener('change',e=>{ if(e.target.files[0]) importPdf(e.target.files[0]); e.target.value=''; });
+$('#file').addEventListener('change',e=>{ importFile(e.target.files[0]); e.target.value=''; });
 ['dragenter','dragover'].forEach(ev=>$('#drop').addEventListener(ev,e=>{ e.preventDefault(); $('#drop').classList.add('over'); }));
 ['dragleave','drop'].forEach(ev=>$('#drop').addEventListener(ev,e=>{ e.preventDefault(); $('#drop').classList.remove('over'); }));
-$('#drop').addEventListener('drop',e=>{ const f=e.dataTransfer.files[0]; if(f&&/pdf$/i.test(f.name)) importPdf(f); else toast('That needs to be a PDF.'); });
+$('#drop').addEventListener('drop',e=>{ e.preventDefault(); importFile(e.dataTransfer.files[0]); });
 
-$('#togglePaste').addEventListener('click',()=>{
-  const w=$('#pasteWrap'); const on=w.style.display==='block';
-  w.style.display=on?'none':'block';
-  $('#togglePaste').textContent=on?'Paste text instead':'Hide the paste box';
-  if(!on) $('#paste').focus();
+$('#pasteWay').addEventListener('click',()=>openPaste($('#pasteWrap').style.display!=='block'));
+$('#pasteWay').addEventListener('keydown',e=>{
+  if(e.key===' '||e.key==='Enter'){ e.preventDefault(); openPaste($('#pasteWrap').style.display!=='block'); }
 });
 $('#doParse').addEventListener('click',()=>{
   const raw=$('#paste').value;

@@ -70,7 +70,7 @@ vm.createContext(sandbox);
 new vm.Script(js + '\n;globalThis.__T={Reader,advanceDecision,newCueState,S,P,segsFromText,mergedView,Clip,AudioCache,clipKey,'
                  + 'Sync,stateBlob,applyState,newSyncCode,tidyCode,ensureClip,EL,'
                  + 'OA,OA_VOICES,usesClips,engineModel,castDir,englishVoices,hashKey,EL_MODEL,pickVoice,'
-                 + 'cueLoopAction,finish};')
+                 + 'cueLoopAction,finish,stripMarkdown,nameOf};')
   .runInContext(sandbox);
 const T = sandbox.__T;
 
@@ -216,6 +216,50 @@ console.log('\nSYNC — never blocks a take, never throws, never loses local wor
   ok('a genuinely rejected upload still reads false',
      (await T.Sync.putClip('big', new ArrayBuffer(4))) === false);
   sandbox.fetch = realFetch;
+}
+
+console.log('\nPASTED SCRIPTS — markdown sources must not become the cast list');
+{
+  const who = txt => {
+    const segs = T.segsFromText(txt).segs.filter(s=>s.kind==='line');
+    return { n: segs.length, who: [...new Set(segs.map(s=>s.speaker))], text: segs.map(s=>s.text) };
+  };
+
+  const plain = who(`MARA\nYou told them I signed off on it.\n\nDANIEL\nI told them the kitchen signed off on it.`);
+  ok('a plain screenplay paste still parses', plain.n === 2 && plain.who.join() === 'MARA,DANIEL');
+
+  /* the total failure: Notion gives every paragraph its own block, so the cue
+     and its dialogue arrived separated by a blank line and the whole script
+     came out as stage direction with no cast at all */
+  const spaced = who(`MARA\n\nYou told them I signed off on it.\n\nDANIEL\n\nI told them the kitchen signed off on it.`);
+  ok('THE BUG: a cue separated from its line by a blank still pairs',
+     spaced.n === 2 && spaced.who.join() === 'MARA,DANIEL');
+
+  const bold = who(`**MARA**\nYou told them I signed off on it.\n\n**DANIEL**\nI told them the kitchen signed off on it.`);
+  ok('a bold cue is MARA, not **MARA', bold.who.join() === 'MARA,DANIEL');
+
+  const mixed = who(`**MARA**\nOne.\n\nMARA\nTwo.`);
+  ok('bold and plain are the same character, not two', mixed.who.length === 1 && mixed.who[0] === 'MARA');
+
+  const ital = who(`MARA\nThe kitchen is *me*, Daniel.`);
+  ok('emphasis never reaches the voice', ital.text[0].indexOf('*') === -1 && /is me,/.test(ital.text[0]));
+
+  ok('headings are dropped',  T.stripMarkdown('# Scene 4') === 'Scene 4');
+  ok('bullets are dropped',   T.stripMarkdown('- he does not look up') === 'he does not look up');
+  ok('numbering is dropped',  T.stripMarkdown('1. he does not look up') === 'he does not look up');
+  ok('quotes are dropped',    T.stripMarkdown('> a remembered line') === 'a remembered line');
+  ok('links keep their text', T.stripMarkdown('see [the note](https://x.y)') === 'see the note');
+  ok('code marks are dropped',T.stripMarkdown('`beat`') === 'beat');
+
+  // it must not damage ordinary screenplay punctuation
+  ok('a lone asterisk survives',   T.stripMarkdown('MARA *') === 'MARA *');
+  ok('a dash in dialogue survives',T.stripMarkdown('No - I never said that.') === 'No - I never said that.');
+  ok('an em dash survives',        T.stripMarkdown('INT. KITCHEN — LATE') === 'INT. KITCHEN — LATE');
+  ok('nothing is reordered',       T.stripMarkdown('a\nb\nc') === 'a\nb\nc');
+
+  // a trailing lone cue with nothing after it must not swallow anything
+  const dangling = who(`MARA\nOne.\n\nDANIEL`);
+  ok('a dangling cue at the end is harmless', dangling.n === 1 && dangling.who[0] === 'MARA');
 }
 
 console.log('\nSTOPPING — reported from a real take: pressing Done spoke the line again');
