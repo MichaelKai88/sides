@@ -556,7 +556,7 @@ const Sync = {
 
 /* bump on every deploy - it is the only way to tell a stale cached app from a
    fix that did not work, and we have already lost a round to that ambiguity */
-const BUILD = 'r6 · 2026-08-14';
+const BUILD = 'r7 · 2026-08-14';
 
 const DEFAULTS = { mode:'cue', silence:1600, sens:5, speed:46, font:52, focus:38,
   mirror:false, names:true, dirs:true, engine:'system', elKey:'',
@@ -1014,10 +1014,32 @@ function parseStructural(pageLines){
     if(n && i + 1 < arr.length && !nameOf(arr[i+1].line.text)){
       cur = n; close(); return;
     }
+    /* "NAME: dialogue" on one line - transcripts, plays, and session scripts.
+       The prefix has to read as a NAME rather than a label: every word starts
+       capitalised. "MICHAEL:" and "Michael:" are speakers; "Stage direction:"
+       and "Reusable teaching move:" are not, and each used to arrive in the
+       cast list asking to be assigned a voice. */
     const m = t.match(/^([A-Za-z][A-Za-z0-9 .'’\-]{0,28}?)\s*:\s+(.+)$/);
-    if(m && m[1].split(/\s+/).length <= 4 && nameOf(m[1].toUpperCase())){
+    const words = m ? m[1].split(/\s+/) : null;
+    if(m && words.length <= 4 && words.every(w => /^[A-Z0-9]/.test(w)) && nameOf(m[1].toUpperCase())){
       cur = m[1].toUpperCase(); close(); push(cur, m[2], 'line', page); return;
     }
+
+    /* A line that is nothing but a label - "Prompt to enter:", "Follow-up
+       prompt:" - is production apparatus, and was otherwise swallowed into the
+       previous speech and read aloud. Safe, because dialogue almost never ends
+       on a colon with nothing after it. The inline case ("Stage direction: he
+       leaves") is deliberately NOT treated this way: real dialogue can carry a
+       colon ("Here's the thing: I don't care"), and silently losing a line is
+       worse than an extra one that is visible and can be deleted. */
+    const bare = t.replace(/\s*:$/, '');
+    if(bare !== t && bare){
+      const bw = bare.split(/\s+/);
+      const nm = bw.length <= 4 && bw.every(w=>/^[A-Z0-9]/.test(w)) ? nameOf(bare.toUpperCase()) : null;
+      if(nm){ cur = nm; close(); return; }            // "MICHAEL:" alone is a cue
+      close(); push(null, t, 'dir', page); return;    // "Prompt to enter:" is a label
+    }
+
     if(cur) push(cur, t, 'line', page);
     else push(null, t, 'dir', page);
   });

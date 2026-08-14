@@ -260,6 +260,33 @@ console.log('\nPASTED SCRIPTS — markdown sources must not become the cast list
   // a trailing lone cue with nothing after it must not swallow anything
   const dangling = who(`MARA\nOne.\n\nDANIEL`);
   ok('a dangling cue at the end is harmless', dangling.n === 1 && dangling.who[0] === 'MARA');
+
+  /* "NAME: dialogue" on one line - the shape Michael's real Notion script uses.
+     The prefix must read as a name; sentence-case labels used to be uppercased
+     into characters, so "Stage direction:" turned up in the cast asking for a
+     voice. Drawn from the actual page, not invented. */
+  const inline = who(`**MICHAEL:** Hi, Daniel. Good to meet you.\n**CLIENT:** Yes, I can hear you.\n**Stage direction:** Michael shares the ChatGPT screen.\n**Reusable teaching move:** Confirm the outcome in the client's language.\n**MICHAEL:** What have you tried so far?`);
+  ok('an inline NAME: is a speaker',        inline.who.indexOf('MICHAEL') !== -1 && inline.who.indexOf('CLIENT') !== -1);
+  ok('THE BUG: "Stage direction:" is not a character', inline.who.indexOf('STAGE DIRECTION') === -1);
+  ok('nor is "Reusable teaching move:"',    inline.who.indexOf('REUSABLE TEACHING MOVE') === -1);
+  ok('the cast is exactly the two speakers', inline.who.length === 2);
+
+  const titled = who(`Michael: Hi, Daniel.\nDaniel: Good to meet you.`);
+  ok('title-case speakers still work', titled.who.join() === 'MICHAEL,DANIEL');
+
+  const bulletLabel = who(`**MICHAEL:** One.\n- **Write** something: an email, invitation, or first draft.`);
+  ok('a bulleted label is not a character', bulletLabel.who.indexOf('WRITE SOMETHING') === -1);
+
+  // a bare label line was being swallowed into the previous speech and read aloud
+  const bareLabel = T.segsFromText(`**MICHAEL:** One.\n**Prompt to enter:**\n> Plan a trip to Santa Fe.`);
+  const mLine = bareLabel.segs.find(s=>s.kind==='line' && s.speaker==='MICHAEL');
+  ok('a bare label does not join the speech', /Prompt to enter/.test(mLine.text) === false);
+  ok('a bare label becomes a direction',
+     bareLabel.segs.some(s=>s.kind==='dir' && /Prompt to enter/.test(s.text)));
+
+  // but a bare NAME: on its own line is still a cue, not a label
+  const bareCue = who(`MICHAEL:\nHi, Daniel.\n\nCLIENT:\nGood to meet you.`);
+  ok('a bare "NAME:" line is still a cue', bareCue.who.join() === 'MICHAEL,CLIENT');
 }
 
 console.log('\nSTOPPING — reported from a real take: pressing Done spoke the line again');
