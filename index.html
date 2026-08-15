@@ -556,7 +556,7 @@ const Sync = {
 
 /* bump on every deploy - it is the only way to tell a stale cached app from a
    fix that did not work, and we have already lost a round to that ambiguity */
-const BUILD = 'r9 · 2026-08-14';
+const BUILD = 'r10 · 2026-08-14';
 
 const DEFAULTS = { mode:'cue', silence:1600, sens:5, speed:46, font:52, focus:38,
   mirror:false, names:true, dirs:true, engine:'system', elKey:'',
@@ -1026,7 +1026,13 @@ function parseStructural(pageLines){
        cast list asking to be assigned a voice. */
     const m = t.match(/^([A-Za-z][A-Za-z0-9 .'’()\-]{0,33}?)\s*:\s+(.+)$/);
     if(m){
-      const nm = nameOf(m[1].toUpperCase());
+      /* nameOf() demands the cue already be upper case, and that is the one
+         signal that survives any clipboard. Forcing .toUpperCase() here threw
+         it away, which is how "Prompt:" and "Learn:" became characters. Screen-
+         play cues are upper case by convention; a Title Case "Michael:" is
+         deliberately not accepted - no script we have uses it, and accepting it
+         is what let the labels through. */
+      const nm = nameOf(m[1]);
       /* capitalisation is judged on the name alone - (V.O.) and (CONT'D) are
          part of the cue, not part of the name, and nameOf folds them away so
          MICHAEL and MICHAEL (V.O.) stay one character */
@@ -1046,7 +1052,7 @@ function parseStructural(pageLines){
     const bare = t.replace(/\s*:$/, '');
     if(bare !== t && bare){
       const bw = bare.replace(/\s*\([^)]*\)\s*$/, '').trim().split(/\s+/);
-      const nm = bw.length <= 4 && bw.every(w=>/^[A-Z0-9]/.test(w)) ? nameOf(bare.toUpperCase()) : null;
+      const nm = bw.length <= 4 && bw.every(w=>/^[A-Z0-9]/.test(w)) ? nameOf(bare) : null;
       /* what follows decides it: a cue introduces a spoken line, whereas
          "Prompt:" introduces quoted material. Without this, every "Prompt:"
          above a block quote became a character with lines to be read aloud. */
@@ -1127,7 +1133,10 @@ function segsFromText(raw){
      "MARA:" - as words they are identical, but quoted material is not dialogue
      and a list item is not a speech. */
   String(raw||'').replace(/\r/g,'').split('\n').forEach(rawLine => {
-    const listy = /^\s*(?:[-+*]\s+|\d+[.)]\s+|>\s?)/.test(rawLine);
+    /* Notion does not necessarily paste "-" for a bullet; it may emit a real
+       bullet glyph, or nothing at all. Kept as a secondary signal only - the
+       case of the cue is what this actually relies on. */
+    const listy = /^\s*(?:[-+*•◦▪‣·]\s+|\d+[.)]\s+|>\s?)/.test(rawLine);
     const text = stripMarkdown(rawLine).trim();
     if(!text){ if(block.length){ blocks.push(block); block = []; } }
     else block.push({ line:{ text, left:0, right:text.length, center:text.length/2, listy }, page:1 });

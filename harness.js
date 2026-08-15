@@ -271,8 +271,13 @@ console.log('\nPASTED SCRIPTS — markdown sources must not become the cast list
   ok('nor is "Reusable teaching move:"',    inline.who.indexOf('REUSABLE TEACHING MOVE') === -1);
   ok('the cast is exactly the two speakers', inline.who.length === 2);
 
+  /* Title Case is deliberately NOT a cue. Accepting it is exactly what let
+     "Prompt:" and "Learn:" into the cast, because upper case is the only
+     signal that survives a clipboard when markdown markers do not. Screenplay
+     cues are upper case by convention; revisit only with a real script that
+     needs Title Case. */
   const titled = who(`Michael: Hi, Daniel.\nDaniel: Good to meet you.`);
-  ok('title-case speakers still work', titled.who.join() === 'MICHAEL,DANIEL');
+  ok('title-case is not a cue (upper case is the signal)', titled.who.length === 0);
 
   const bulletLabel = who(`**MICHAEL:** One.\n- **Write** something: an email, invitation, or first draft.`);
   ok('a bulleted label is not a character', bulletLabel.who.indexOf('WRITE SOMETHING') === -1);
@@ -315,6 +320,25 @@ console.log('\nPASTED SCRIPTS — markdown sources must not become the cast list
   // but a genuine cue above genuine dialogue is untouched
   const realCue = who(`MARA:\nYou told them I signed off on it.\n\nDANIEL:\nI told them the kitchen did.`);
   ok('a real cue above real dialogue still works', realCue.who.join() === 'MARA,DANIEL');
+
+  /* Reported twice from a real Cast screen. The first fix keyed off markdown
+     markers; they do not survive Michael's clipboard, so it never fired. Case
+     does survive, and it is what these rely on - no markers anywhere below. */
+  const naked = who(`MICHAEL: One.\nPrompt:\nCompare a Taos day trip with a slower day in Santa Fe.\nCLIENT: Two.`);
+  ok('THE BUG: "Prompt:" with NO markdown is not a character', naked.who.indexOf('PROMPT') === -1);
+  ok('and the real speakers survive it',  naked.who.join() === 'MICHAEL,CLIENT');
+
+  const nakedLearn = who(`MICHAEL: You can use AI to:\nLearn: ask for an explanation at your level.\nWrite something: an email or a first draft.\nCLIENT: Two.`);
+  ok('THE BUG: unbulleted "Learn:" is not a character', nakedLearn.who.indexOf('LEARN') === -1);
+  ok('nor "Write something:"',            nakedLearn.who.indexOf('WRITE SOMETHING') === -1);
+  ok('the cast is still just the two',    nakedLearn.who.join() === 'MICHAEL,CLIENT');
+
+  const nakedStage = who(`MICHAEL: One.\nStage direction: Michael shares the screen.\nReusable teaching move: Confirm the outcome.\nCLIENT: Two.`);
+  ok('unmarked prose labels are not characters', nakedStage.who.join() === 'MICHAEL,CLIENT');
+
+  // a real bullet glyph, which is what a rich editor may actually paste
+  const glyph = who(`MICHAEL: One.\n• LEARN: ask for an explanation.\nCLIENT: Two.`);
+  ok('a bullet GLYPH is treated as a list too', glyph.who.indexOf('LEARN') === -1);
 }
 
 console.log('\nSTOPPING — reported from a real take: pressing Done spoke the line again');
