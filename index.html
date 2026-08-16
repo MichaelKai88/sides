@@ -597,7 +597,7 @@ const Sync = {
 
 /* bump on every deploy - it is the only way to tell a stale cached app from a
    fix that did not work, and we have already lost a round to that ambiguity */
-const BUILD = 'r13 · 2026-08-14';
+const BUILD = 'r14 · 2026-08-14';
 
 const DEFAULTS = { mode:'cue', silence:1600, sens:5, speed:46, font:52, focus:38,
   mirror:false, names:true, dirs:true, engine:'system', elKey:'',
@@ -2193,6 +2193,7 @@ async function startPrompter(startAt){
   }
 
   await countdown();
+  wakeChrome();     // show the controls once at the top, so they are known to exist
   runLoop();
 }
 
@@ -2492,16 +2493,30 @@ $('#pMic').addEventListener('click',()=>{
 $('#pSpeed').addEventListener('input',()=>{ S.set.speed = +$('#pSpeed').value; save(); });
 
 $('#tapz').addEventListener('click',e=>{
+  const wasAwake = chromeAwake();
   wakeChrome();
   if(P.mode==='scroll') return;
+  /* Hands-free: a tap is not how you advance, it is how you reach the controls,
+     so the first tap after they fade only brings them back. In tap mode the tap
+     IS the advance and must never be swallowed - the bar at the foot of the
+     screen is the route to the menu there. */
+  if(!wasAwake && P.mode !== 'tap') return;
   step(1);
 });
+/* the dim bar had no click handler at all, so tapping it did nothing and the
+   only way to reach the menu was a tap on the script, which advanced a line */
+$('#chrome').addEventListener('click', ()=>wakeChrome());   // and pressing a button keeps it up
 
 let chromeTimer;
+/* 2.8s was tuned for a mouse, which wakes the controls just by moving. On a
+   touch screen every wake costs a deliberate tap, so the controls need long
+   enough to actually reach for one. */
+const CHROME_HOLD = 4500;
+function chromeAwake(){ return $('#chrome').classList.contains('wake'); }
 function wakeChrome(){
   $('#chrome').classList.add('wake');
   clearTimeout(chromeTimer);
-  chromeTimer = setTimeout(()=>$('#chrome').classList.remove('wake'), 2800);
+  chromeTimer = setTimeout(()=>$('#chrome').classList.remove('wake'), CHROME_HOLD);
 }
 $('#prompter').addEventListener('mousemove', wakeChrome);
 
