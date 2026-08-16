@@ -161,8 +161,33 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%;bac
 
 #launch{position:fixed;left:0;right:0;bottom:0;background:linear-gradient(to top,var(--black) 62%,transparent);
   padding:26px 28px calc(24px + env(safe-area-inset-bottom));z-index:40}
-#launch .inner{max-width:1140px;margin:0 auto;display:flex;gap:14px;align-items:center;justify-content:flex-end}
-#launchNote{margin-right:auto;font-size:12.5px;color:var(--bone-faint)}
+/* four buttons plus the resume note will not fit a narrow window on one line */
+#launch .inner{max-width:1140px;margin:0 auto;display:flex;gap:14px;align-items:center;
+  justify-content:flex-end;flex-wrap:wrap}
+#launchNote{margin-right:auto;font-size:12.5px;color:var(--bone-faint);max-width:52ch;flex:1 1 16ch}
+#btnResume{white-space:nowrap}
+@media(max-width:640px){ #btnResume{order:5;flex:1 1 100%} }
+
+/* Go to — one list, scroll it or search it. Same panel before and during a take. */
+#goto{position:fixed;inset:0;z-index:60;background:rgba(8,6,4,.94);display:none}
+#goto.on{display:block}
+.gt-inner{max-width:820px;margin:0 auto;height:100%;display:flex;flex-direction:column;padding:18px 16px 0}
+.gt-head{display:flex;gap:10px;align-items:center;flex:none;padding-bottom:12px}
+#gtSearch{flex:1;background:var(--pit);border:1px solid var(--edge-lit);border-radius:3px;
+  padding:12px 14px;font-size:15px;color:var(--bone);font-family:var(--ui)}
+#gtSearch:focus{border-color:var(--brass-deep);outline:none}
+#gtList{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;border-top:1px solid var(--edge)}
+.gt-row{display:block;width:100%;text-align:left;padding:11px 12px;border-bottom:1px solid var(--edge);
+  font-size:14.5px;line-height:1.5;color:var(--bone-dim);cursor:pointer}
+.gt-row:hover{background:var(--brass-wash);color:var(--bone)}
+.gt-row .who{font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:var(--brass);
+  display:inline-block;min-width:9ch;margin-right:10px;vertical-align:baseline}
+.gt-row.here{background:var(--brass-wash);border-left:2px solid var(--brass)}
+.gt-row.here .who::after{content:' ▸'}
+.gt-sec{padding:14px 12px 6px;font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--bone-faint);border-bottom:1px solid var(--edge);cursor:pointer}
+.gt-sec:hover{color:var(--brass)}
+.gt-foot{flex:none;padding:10px 2px 14px;font-size:12px;color:var(--bone-faint)}
 
 /* prompter */
 #prompter{position:fixed;inset:0;background:var(--black);z-index:100;display:none;overflow:hidden}
@@ -367,8 +392,21 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%;bac
 <div id="launch"><div class="inner">
   <span id="launchNote">Bring in a script to begin.</span>
   <button class="btn" id="btnNext">Setup</button>
+  <button class="btn ghost" id="btnGoto" style="display:none">Go to…</button>
   <button class="btn primary" id="btnRun" disabled>Start the take</button>
+  <button class="btn" id="btnResume" style="display:none">Resume where you left off</button>
 </div></div>
+
+<div id="goto" aria-hidden="true">
+  <div class="gt-inner">
+    <div class="gt-head">
+      <input type="text" id="gtSearch" placeholder="Search the script — or just scroll" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <button class="btn ghost" id="gtClose">Close</button>
+    </div>
+    <div id="gtList"></div>
+    <div class="gt-foot" id="gtFoot"></div>
+  </div>
+</div>
 
 <div id="prompter">
   <div id="stagewrap"><div id="mirrorwrap"><div id="stage"></div></div></div>
@@ -379,6 +417,7 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%;bac
   <div id="chrome">
     <button class="cbtn" id="pExit">Done</button>
     <button class="cbtn" id="pRestart">Top of scene</button>
+    <button class="cbtn" id="pGoto">Go to</button>
     <button class="cbtn" id="pPause">Hold</button>
     <span style="width:14px"></span>
     <div class="grp"><span class="lbl">SIZE</span><button class="cbtn" id="pFontDn">−</button><button class="cbtn" id="pFontUp">+</button></div>
@@ -556,12 +595,13 @@ const Sync = {
 
 /* bump on every deploy - it is the only way to tell a stale cached app from a
    fix that did not work, and we have already lost a round to that ambiguity */
-const BUILD = 'r11 · 2026-08-14';
+const BUILD = 'r12 · 2026-08-14';
 
 const DEFAULTS = { mode:'cue', silence:1600, sens:5, speed:46, font:52, focus:38,
   mirror:false, names:true, dirs:true, engine:'system', elKey:'',
   oaKey:'', oaModel:'gpt-4o-mini-tts', rate:100, vol:85, count:3, device:'' };
-const S = { segs:[], cast:{}, set:{...DEFAULTS}, voices:[], step:0, pages:[], scripts:[], name:'', showTrim:false, fileHint:'', elVoices:[] };
+const S = { segs:[], cast:{}, set:{...DEFAULTS}, voices:[], step:0, pages:[], scripts:[], name:'', showTrim:false, fileHint:'', elVoices:[],
+  mark:null };   // where the last take was left off
 let SEQ = 1;
 /* bumped by every advanceInto call, so a superseded one can tell it is stale */
 let ADVANCE_SEQ = 0;
@@ -1556,6 +1596,14 @@ function updateLaunch(){
     const theirs=S.segs.filter(s=>s.kind==='line'&&!s.out&&S.cast[s.speaker]?.role==='reader').length;
     note=`${mine} of your lines · ${theirs} read to you`;
   }
+  const at = has ? resumeCue() : -1;
+  $('#btnResume').style.display = at >= 0 ? '' : 'none';
+  $('#btnGoto').style.display   = has ? '' : 'none';
+  if(at >= 0 && S.mark){
+    const who = S.mark.who ? `${S.mark.who}: ` : '';
+    const t = S.mark.text.length > 52 ? S.mark.text.slice(0,52).replace(/\s+\S*$/,'') + '…' : S.mark.text;
+    note += ` · left off ${relTime(S.mark.at)} at ${who}“${t}”`;
+  }
   $('#launchNote').textContent=note;
 }
 
@@ -1738,12 +1786,82 @@ async function prepareReader(){
   return true;
 }
 
-$('#btnRun').addEventListener('click', async ()=>{
+async function launch(at){
   if(!S.segs.some(s=>s.kind==='line'&&!s.out)) return;
   Clip.unlock();                       // must happen inside the click for iOS
   if(usesClips()){ if(!(await prepareReader())) return; }
-  await startPrompter();
+  await startPrompter(at);
+}
+$('#btnRun').addEventListener('click', ()=>launch(0));
+$('#btnResume').addEventListener('click', ()=>{
+  const at = resumeCue();
+  if(at < 0){ updateLaunch(); return toast('That line is no longer in the script.', 4200); }
+  launch(at);
 });
+
+/* ---------- Go to: one list, scrolled to where you are, filtered as you type ---------- */
+function gotoRows(){
+  const view = P.on ? P.view : mergedView();
+  const cues = P.on ? P.cues : cuesOf(view);
+  const cueOf = new Map();
+  cues.forEach((vi,ci)=>cueOf.set(vi,ci));
+  return view.map((seg,i)=>({
+    kind: seg.kind === 'line' ? 'line' : 'sec',
+    cue:  cueOf.has(i) ? cueOf.get(i) : -1,
+    who:  seg.speaker || '',
+    text: String(seg.text || '').trim()
+  })).filter(r => r.text || r.who);
+}
+function gotoMatch(row, q){
+  if(!q) return true;
+  return (row.who + ' ' + row.text).toLowerCase().indexOf(q.toLowerCase()) !== -1;
+}
+function renderGoto(){
+  const q = $('#gtSearch').value.trim();
+  const rows = gotoRows();
+  const box = $('#gtList'); box.innerHTML = '';
+  let shown = 0, hereEl = null;
+  rows.forEach(r=>{
+    if(!gotoMatch(r, q)) return;
+    shown++;
+    const el = document.createElement('div');
+    if(r.kind === 'sec'){
+      el.className = 'gt-sec'; el.textContent = r.text;
+    } else {
+      el.className = 'gt-row' + (P.on && r.cue === P.idx ? ' here' : '');
+      el.innerHTML = `<span class="who">${esc(r.who)}</span>${esc(r.text)}`;
+      if(P.on && r.cue === P.idx) hereEl = el;
+    }
+    if(r.cue >= 0) el.addEventListener('click', ()=>{ closeGoto(); P.on ? jumpTo(r.cue) : launch(r.cue); });
+    else if(r.kind === 'sec'){
+      // a heading jumps to the first line beneath it
+      const next = rows[rows.indexOf(r)+1];
+      if(next && next.cue >= 0) el.addEventListener('click', ()=>{ closeGoto(); P.on ? jumpTo(next.cue) : launch(next.cue); });
+    }
+    box.appendChild(el);
+  });
+  $('#gtFoot').textContent = q
+    ? `${shown} matching ${shown===1?'line':'lines'} — tap one to go there`
+    : (P.on ? 'Tap any line to jump there' : 'Tap any line to start the take there');
+  if(!q && hereEl) hereEl.scrollIntoView({ block:'center' });
+}
+function openGoto(){
+  if(!S.segs.some(s=>s.kind==='line'&&!s.out)) return toast('Bring in a script first.');
+  $('#gtSearch').value = '';
+  $('#goto').classList.add('on');
+  $('#goto').setAttribute('aria-hidden','false');
+  renderGoto();
+  if(!P.on) $('#gtSearch').focus();     // on iPad mid-take, do not throw up a keyboard
+}
+function closeGoto(){
+  $('#goto').classList.remove('on');
+  $('#goto').setAttribute('aria-hidden','true');
+}
+$('#gtSearch').addEventListener('input', renderGoto);
+$('#gtClose').addEventListener('click', closeGoto);
+$('#btnGoto').addEventListener('click', openGoto);
+$('#pGoto').addEventListener('click', openGoto);
+$('#goto').addEventListener('click', e=>{ if(e.target.id === 'goto') closeGoto(); });
 
 /* ============================================================
    reader (TTS)
@@ -1925,7 +2043,9 @@ function mergedView(){
       else last.text = (last.text + ' ' + s.text).trim();
       return;
     }
-    out.push({ speaker: s.speaker, kind: s.kind === 'paren' ? 'line' : s.kind,
+    /* the id of the first source segment rides along, so a saved position can be
+       found again after the script is edited and the numbering has shifted */
+    out.push({ id: s.id, speaker: s.speaker, kind: s.kind === 'paren' ? 'line' : s.kind,
                text: s.kind === 'paren' ? '' : s.text,
                parens: s.kind === 'paren' ? [s.text] : [], page: s.page });
   });
@@ -1935,6 +2055,35 @@ function mergedView(){
 function visibleSegs(){
   return S.segs.filter(s => !s.out)
                 .filter(s => s.kind==='dir' || !s.speaker || S.cast[s.speaker]?.role !== 'skip');
+}
+
+/* Pure, so the tests can drive them without a prompter or a DOM. */
+function cuesOf(view){
+  const out = [];
+  (view||[]).forEach((s,i)=>{ if(s.kind === 'line') out.push(i); });
+  return out;
+}
+/* Resolve a saved position back to a cue. Matching on the segment id rather
+   than the line number is what makes it survive an edit: delete a direction and
+   "line 34" is a different line, but the id still points at the same speech.
+   Returns -1 when that line no longer exists, and no resume is offered. */
+function markCue(view, cues, mark){
+  if(!mark || !view || !cues) return -1;
+  for(let i=0; i<cues.length; i++){
+    const seg = view[cues[i]];
+    if(seg && seg.id != null && seg.id === mark.id) return i;
+  }
+  return -1;
+}
+function relTime(then){
+  const s = Math.max(0, Math.round((Date.now() - then)/1000));
+  if(s < 90)    return 'a moment ago';
+  const m = Math.round(s/60);
+  if(m < 60)    return `${m} minutes ago`;
+  const h = Math.round(m/60);
+  if(h < 24)    return h === 1 ? 'an hour ago' : `${h} hours ago`;
+  const d = Math.round(h/24);
+  return d === 1 ? 'yesterday' : `${d} days ago`;
 }
 
 function buildStage(){
@@ -2002,7 +2151,7 @@ function setStatus(kind, text){
   $('#statusText').textContent = text;
 }
 
-async function startPrompter(){
+async function startPrompter(startAt){
   P.on = true; P.mode = S.set.mode; P.idx = 0; P.paused=false; P.busy=false; P.done=false; P.wps = 2.2; Reader.warned=false;
   $('#prompter').classList.add('on');
   $('#mirrorwrap').classList.toggle('on', S.set.mirror);
@@ -2011,8 +2160,9 @@ async function startPrompter(){
   $('#grpMic').style.display   = P.mode==='cue' ? 'flex' : 'none';
   $('#pSpeed').value = S.set.speed;
   buildStage();
+  P.idx = Math.max(0, Math.min(startAt|0, Math.max(0, P.cues.length-1)));
   paintFocus();
-  centerOn(P.cues[0] ?? 0, false);
+  centerOn(P.cues[P.idx] ?? 0, false);
   Reader.warm();
 
   try{ P.wake = await navigator.wakeLock?.request('screen'); }catch(e){}
@@ -2052,6 +2202,7 @@ function countdown(){
 
 function stopPrompter(){
   P.on=false;
+  save();          // now the take is over, the position may reach the other device
   cancelAnimationFrame(P.raf);
   Reader.stop();
   Listener.stop();
@@ -2101,6 +2252,7 @@ async function advanceInto(i){
 
   P.done = false;   // any deliberate move re-opens the scene; finish() closes it again
   P.idx = Math.max(0, Math.min(i, P.cues.length-1));
+  noteMark();
   paintFocus();
   centerOn(P.cues[P.idx]);
   const seg = P.view[P.cues[P.idx]];
@@ -2236,10 +2388,45 @@ function scrollLoop(){
   P.raf = requestAnimationFrame(step);
 }
 
+/* Written to its own small key while a take runs - the full state blob is far
+   larger and would be rewritten on every cue. Sync.push already refuses while
+   P.on, so nothing here reaches the network mid-take; stopPrompter() saves
+   properly afterwards and that is what carries the position to the other device. */
+function noteMark(){
+  if(!P.on) return;
+  const seg = P.view[P.cues[P.idx]];
+  if(!seg || seg.id == null) return;
+  S.mark = { id:seg.id, at:Date.now(), n:P.idx+1, of:P.cues.length,
+             who:seg.speaker || '', text:String(seg.text||'').slice(0,110) };
+  Store.set('sides:mark', S.mark);
+}
+function clearMark(){ S.mark = null; Store.set('sides:mark', null); }
+
+/* the cue a saved position points at, computed without starting a take */
+function resumeCue(){
+  if(!S.mark) return -1;
+  const view = P.on ? P.view : mergedView();
+  const cues = P.on ? P.cues : cuesOf(view);
+  return markCue(view, cues, S.mark);
+}
+
+function jumpTo(i){
+  if(!P.on) return;
+  Reader.stop(); P.busy = false; Listener.gated = false;
+  if(P.paused){
+    P.paused = false;
+    $('#pPause').textContent = 'Hold';
+    $('#pPause').setAttribute('aria-pressed','false');
+  }
+  P.cueState = newCueState();
+  advanceInto(i);          // bumps the generation, so the abandoned line goes stale
+}
+
 function finish(){
   setStatus('', 'End of scene');
   P.busy = false;
   P.done = true;   // without this the cue loop speaks the last reader line forever
+  clearMark();     // the scene was finished - there is nothing to resume
   toast('End of scene. Press T for the top, or Done to exit.', 5000);
 }
 
@@ -2308,8 +2495,13 @@ function wakeChrome(){
 $('#prompter').addEventListener('mousemove', wakeChrome);
 
 document.addEventListener('keydown',e=>{
+  if($('#goto').classList.contains('on')){
+    if(e.key === 'Escape'){ e.preventDefault(); closeGoto(); }
+    return;                                  // the panel owns the keyboard while it is open
+  }
   if(!P.on) return;
   const k = e.key;
+  if(k.toLowerCase()==='j'){ e.preventDefault(); openGoto(); return; }
   if(k===' '||k==='ArrowRight'||k==='ArrowDown'||k==='PageDown'){ e.preventDefault(); step(1); wakeChrome(); }
   else if(k==='ArrowLeft'||k==='ArrowUp'||k==='PageUp'){ e.preventDefault(); step(-1); wakeChrome(); }
   else if(k==='Escape'){ stopPrompter(); resizeAll(); }
@@ -2345,7 +2537,7 @@ window.addEventListener('focus', ()=>{ Sync.pull(); });
 function stateBlob(){
   return {
     segs:S.segs.map(s=>({...s})), cast:S.cast, set:S.set, name:S.name,
-    scripts:S.scripts, paste:$('#paste').value
+    scripts:S.scripts, paste:$('#paste').value, mark:S.mark
   };
 }
 function save(){
@@ -2359,7 +2551,7 @@ function save(){
 function applyState(d){
   if(d){
     S.set={...DEFAULTS,...(d.set||{})};
-    S.scripts=d.scripts||[]; S.name=d.name||'';
+    S.scripts=d.scripts||[]; S.name=d.name||''; S.mark=d.mark||null;
     if(d.paste) $('#paste').value=d.paste;
     if(d.segs?.length){
       S.segs=d.segs; SEQ=Math.max(...S.segs.map(s=>s.id||0))+1; S.cast=d.cast||{};
@@ -2372,6 +2564,10 @@ function applyState(d){
 async function boot(){
   S.voices=await loadVoices();
   applyState(await Store.get('sides:v2'));
+  /* the small local key is written on every cue, the blob only when a take ends,
+     so on a crash or a closed tab the local one is the fresher of the two */
+  const localMark = await Store.get('sides:mark');
+  if(localMark && (!S.mark || (localMark.at||0) > (S.mark.at||0))) S.mark = localMark;
   await Sync.boot();
   const stamp=$('#buildStamp'); if(stamp) stamp.textContent = BUILD;
   renderLib(); refresh(); refreshSettingsUI(); listDevices();

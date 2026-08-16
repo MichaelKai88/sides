@@ -70,7 +70,7 @@ vm.createContext(sandbox);
 new vm.Script(js + '\n;globalThis.__T={Reader,advanceDecision,newCueState,S,P,segsFromText,mergedView,Clip,AudioCache,clipKey,'
                  + 'Sync,stateBlob,applyState,newSyncCode,tidyCode,ensureClip,EL,'
                  + 'OA,OA_VOICES,usesClips,engineModel,castDir,englishVoices,hashKey,EL_MODEL,pickVoice,'
-                 + 'cueLoopAction,finish,stripMarkdown,nameOf,advanceInto};')
+                 + 'cueLoopAction,finish,stripMarkdown,nameOf,advanceInto,cuesOf,markCue,gotoRows,gotoMatch,relTime};')
   .runInContext(sandbox);
 const T = sandbox.__T;
 
@@ -380,6 +380,54 @@ console.log('\nSTOPPING — reported from a real take: pressing Done spoke the l
 
   T.Clip.play = realPlay; T.AudioCache.get = realCacheGet;
   T.Reader.sayWithSpeech = realSpeech; T.S.set.engine = 'elevenlabs';
+}
+
+console.log('\nRESUME AND GO TO — a saved position must survive an edit, or not be offered');
+{
+  const view = [
+    { id:1, kind:'dir',  speaker:null, text:'INT. KITCHEN — LATE' },
+    { id:2, kind:'line', speaker:'MARA',   text:'You told them I signed off on it.' },
+    { id:3, kind:'line', speaker:'DANIEL', text:'I told them the kitchen signed off on it.' },
+    { id:4, kind:'dir',  speaker:null, text:'0:42 — the insurance letter' },
+    { id:5, kind:'line', speaker:'MARA',   text:'The kitchen is me, Daniel.' },
+  ];
+  const cues = T.cuesOf(view);
+  ok('cues are the spoken lines only', cues.join() === '1,2,4');
+
+  ok('a saved position resolves to its cue', T.markCue(view, cues, { id:5 }) === 2);
+  ok('the first line resolves to cue 0',     T.markCue(view, cues, { id:2 }) === 0);
+
+  /* the reason it stores an id and not a line number: delete the direction and
+     "line 4" is a different line, but the id still finds the same speech */
+  const edited = view.filter(s => s.id !== 4);
+  ok('it survives a deleted direction', T.markCue(edited, T.cuesOf(edited), { id:5 }) === 2);
+
+  ok('a deleted line offers no resume',  T.markCue(view, cues, { id:99 }) === -1);
+  ok('no mark offers no resume',         T.markCue(view, cues, null) === -1);
+  ok('a direction is never a resume point', T.markCue(view, cues, { id:1 }) === -1);
+
+  // the Go to list: headings kept as sections, lines carry their cue number
+  T.S.segs = [
+    { id:1, kind:'dir',  speaker:null,     text:'INT. KITCHEN — LATE', out:false },
+    { id:2, kind:'line', speaker:'MARA',   text:'You told them I signed off on it.', out:false },
+    { id:3, kind:'line', speaker:'DANIEL', text:'I told them the kitchen signed off.', out:false },
+  ];
+  T.S.set.dirs = true;
+  const rows = T.gotoRows();
+  ok('every line and heading is listed',  rows.length === 3);
+  ok('the heading is a section, not a cue', rows[0].kind === 'sec' && rows[0].cue === -1);
+  ok('lines carry their cue number',      rows[1].cue === 0 && rows[2].cue === 1);
+  ok('lines carry their speaker',         rows[1].who === 'MARA');
+
+  ok('search matches the dialogue', T.gotoMatch({ who:'MARA', text:'the insurance letter' }, 'insurance'));
+  ok('search matches the speaker',  T.gotoMatch({ who:'DANIEL', text:'nothing' }, 'daniel'));
+  ok('search is case-insensitive',  T.gotoMatch({ who:'MARA', text:'Santa Fe' }, 'santa fe'));
+  ok('search excludes what it should', !T.gotoMatch({ who:'MARA', text:'Santa Fe' }, 'insurance'));
+  ok('an empty search shows everything', T.gotoMatch({ who:'', text:'anything' }, ''));
+
+  ok('a fresh mark reads as recent', T.relTime(Date.now() - 5000) === 'a moment ago');
+  ok('an hours-old mark says hours', /hours ago/.test(T.relTime(Date.now() - 5*3600*1000)));
+  ok('a day-old mark says yesterday', T.relTime(Date.now() - 26*3600*1000) === 'yesterday');
 }
 
 console.log('\nINTERRUPTING A LINE — a superseded advance must not wake up and drive the script');
