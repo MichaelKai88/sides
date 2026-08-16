@@ -70,7 +70,7 @@ vm.createContext(sandbox);
 new vm.Script(js + '\n;globalThis.__T={Reader,advanceDecision,newCueState,S,P,segsFromText,mergedView,Clip,AudioCache,clipKey,'
                  + 'Sync,stateBlob,applyState,newSyncCode,tidyCode,ensureClip,EL,'
                  + 'OA,OA_VOICES,usesClips,engineModel,castDir,englishVoices,hashKey,EL_MODEL,pickVoice,'
-                 + 'cueLoopAction,finish,stripMarkdown,nameOf};')
+                 + 'cueLoopAction,finish,stripMarkdown,nameOf,advanceInto};')
   .runInContext(sandbox);
 const T = sandbox.__T;
 
@@ -380,6 +380,44 @@ console.log('\nSTOPPING — reported from a real take: pressing Done spoke the l
 
   T.Clip.play = realPlay; T.AudioCache.get = realCacheGet;
   T.Reader.sayWithSpeech = realSpeech; T.S.set.engine = 'elevenlabs';
+}
+
+console.log('\nINTERRUPTING A LINE — a superseded advance must not wake up and drive the script');
+{
+  /* Observed in a browser: pressing Next while the reader spoke landed on the
+     right cue, then seconds later the script advanced on its own to a cue two
+     further on and spoke it. The abandoned advanceInto was parked on an await
+     inside Reader.say; when it settled it cleared the busy lock under the new
+     line and carried on from wherever the script had moved to. */
+  const P_ = T.P, S_ = T.S;
+  const realSay = T.Reader.say;
+  let says = 0, release = null;
+  T.Reader.say = () => {
+    says++;
+    if(says === 1) return new Promise(res=>{ release = ()=>res({ ok:true, expect:0 }); });
+    return Promise.resolve({ ok:true, expect:0 });
+  };
+  P_.on = true; P_.paused = false; P_.busy = false; P_.done = false; P_.mode = 'tap';
+  P_.view = [{speaker:'A',kind:'line',text:'one'},{speaker:'A',kind:'line',text:'two'},{speaker:'A',kind:'line',text:'three'}];
+  P_.cues = [0,1,2];
+  S_.cast = { A:{ role:'reader', voice:'v1' } };
+
+  T.advanceInto(0);
+  await new Promise(r=>setTimeout(r, 420));          // past the 260ms lead-in
+  ok('the first line is speaking and holds the lock', says === 1 && P_.busy === true);
+
+  T.advanceInto(2);                                   // a jump supersedes it
+  await new Promise(r=>setTimeout(r, 420));
+  const landed = P_.idx;
+  if(release) release();                              // the abandoned line finally settles
+  await new Promise(r=>setTimeout(r, 700));
+
+  ok('the jump lands where it was asked to',   landed === 2);
+  ok('THE BUG: the abandoned line does not move the script', P_.idx === 2);
+  ok('and it never speaks again',              says === 2);
+
+  T.Reader.say = realSay;
+  P_.on = false; P_.busy = false; P_.done = false;
 }
 
 console.log('\nEND OF SCENE — reported from a real take: the last reader line repeated forever');

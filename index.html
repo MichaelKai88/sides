@@ -556,13 +556,15 @@ const Sync = {
 
 /* bump on every deploy - it is the only way to tell a stale cached app from a
    fix that did not work, and we have already lost a round to that ambiguity */
-const BUILD = 'r10 · 2026-08-14';
+const BUILD = 'r11 · 2026-08-14';
 
 const DEFAULTS = { mode:'cue', silence:1600, sens:5, speed:46, font:52, focus:38,
   mirror:false, names:true, dirs:true, engine:'system', elKey:'',
   oaKey:'', oaModel:'gpt-4o-mini-tts', rate:100, vol:85, count:3, device:'' };
 const S = { segs:[], cast:{}, set:{...DEFAULTS}, voices:[], step:0, pages:[], scripts:[], name:'', showTrim:false, fileHint:'', elVoices:[] };
 let SEQ = 1;
+/* bumped by every advanceInto call, so a superseded one can tell it is stale */
+let ADVANCE_SEQ = 0;
 
 const $  = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
@@ -2089,6 +2091,14 @@ async function runLoop(){
 
 async function advanceInto(i){
   if(!P.on) return;
+  /* Each call supersedes the one before it. Interrupting a reader line - Next,
+     Hold, or a jump - leaves the abandoned call parked on an await inside
+     Reader.say. When that finally settled it used to carry on from wherever the
+     script had since moved to: it cleared the busy lock under the new line and
+     advanced again on its own, seconds later, speaking a line nobody asked for. */
+  const gen = ++ADVANCE_SEQ;
+  const stale = () => !P.on || gen !== ADVANCE_SEQ;
+
   P.done = false;   // any deliberate move re-opens the scene; finish() closes it again
   P.idx = Math.max(0, Math.min(i, P.cues.length-1));
   paintFocus();
@@ -2103,24 +2113,27 @@ async function advanceInto(i){
     const began = performance.now();
     try{
       await new Promise(r=>setTimeout(r,260));
-      if(!P.on) return;
+      if(stale()) return;
       const r = await Reader.say(seg.text, S.cast[seg.speaker]?.voice, castDir(seg.speaker));
-      if(!P.on) return;
-      if(!r.ok){
+      if(stale()) return;
+      // an aborted clip means we were stopped on purpose - not a reader failure
+      if(!r.ok && !r.aborted){
         // hold the beat so the scene keeps its rhythm on camera
         const left = r.expect - (performance.now() - began);
         if(left > 250) await new Promise(x=>setTimeout(x, Math.min(left, 9000)));
+        if(stale()) return;
         if(!Reader.warned){
           Reader.warned = true;
           toast("The reader didn't speak that line — holding the beat. Space always moves you on.", 5000);
         }
       }
     } finally {
-      Listener.gated = false; P.busy = false;
+      // only the current call owns the lock; a superseded one must not free it
+      if(gen === ADVANCE_SEQ){ Listener.gated = false; P.busy = false; }
     }
-    if(!P.on) return;
+    if(stale()) return;
     if(!P.paused && P.idx < P.cues.length-1) return advanceInto(P.idx+1);
-    if(P.idx >= P.cues.length-1) return finish();
+    if(!P.paused && P.idx >= P.cues.length-1) return finish();
   } else {
     P.cueState = newCueState();
     setStatus(P.mode==='cue' && Listener.enabled ? 'listening' : '', 
