@@ -48,7 +48,7 @@ function SpeechSynthesisUtterance(t){ this.text=t; this.onstart=this.onend=this.
 const sandbox = {
   document: doc, console, setTimeout, clearTimeout, setInterval, clearInterval,
   requestAnimationFrame: ()=>0, cancelAnimationFrame: ()=>{},
-  performance, speechSynthesis, SpeechSynthesisUtterance,
+  performance, speechSynthesis, SpeechSynthesisUtterance, innerHeight:900, innerWidth:1400,
   navigator:{ mediaDevices:{ enumerateDevices:async()=>[], getUserMedia:async()=>{throw new Error('no mic')} } },
   Math, JSON, Date, Promise, Error, Set, Map, Proxy, Float32Array, prompt:()=>null,
   /* counted, so a test can assert that nothing reached the network at all */
@@ -70,7 +70,8 @@ vm.createContext(sandbox);
 new vm.Script(js + '\n;globalThis.__T={Reader,advanceDecision,newCueState,S,P,segsFromText,mergedView,Clip,AudioCache,clipKey,'
                  + 'Sync,stateBlob,applyState,newSyncCode,tidyCode,ensureClip,EL,'
                  + 'OA,OA_VOICES,usesClips,engineModel,castDir,englishVoices,hashKey,EL_MODEL,pickVoice,'
-                 + 'cueLoopAction,finish,stripMarkdown,nameOf,advanceInto,cuesOf,markCue,gotoRows,gotoMatch,relTime};')
+                 + 'cueLoopAction,finish,stripMarkdown,nameOf,advanceInto,cuesOf,markCue,gotoRows,gotoMatch,relTime,'
+                 + 'pageCount,pageMove,step};')
   .runInContext(sandbox);
 const T = sandbox.__T;
 
@@ -627,6 +628,79 @@ console.log('\nCLIP RESOLUTION — the order that decides whether a line is paid
 
   T.AudioCache.get = realCacheGet; T.AudioCache.put = realCachePut;
   T.Sync.getClip = realRemoteGet;  T.Sync.putClip = realRemotePut; T.EL.synth = realSynth;
+}
+
+console.log('\nA SPEECH TALLER THAN THE SCREEN — reported from a TAI session script');
+{
+  /* Seen on the iPad and again on Windows: a teaching block ran past the top
+     and the bottom of the screen at once and neither end could be reached.
+     centerOn put the middle of the speech on the focus mark, and step() only
+     ever moved between cues - there was no way to move inside one. */
+  ok('a speech that fits is one screen',        T.pageCount(400, 700, 630) === 1);
+  ok('one exactly the height of the band fits', T.pageCount(700, 700, 630) === 1);
+  ok('a pixel taller is two screens',           T.pageCount(701, 700, 630) === 2);
+  ok('THE BUG: a two-screen speech is not one', T.pageCount(1300, 700, 630) === 2);
+  ok('it rounds up, so no tail is lost',        T.pageCount(1331, 700, 630) === 3);
+  ok('a very tall speech keeps counting',       T.pageCount(3220, 700, 630) === 5);
+  /* the last screen must reach the foot of the speech, or the fix loses the
+     very text it was written to recover */
+  {
+    const h = 3220, band = 700, step = 630;
+    const last = (T.pageCount(h, band, step) - 1) * step;
+    ok('the last screen reaches the end of the speech', last + band >= h);
+  }
+
+  ok('paging forward stays inside the speech',  T.pageMove(0, 3, 1) === 1);
+  ok('and again',                               T.pageMove(1, 3, 1) === 2);
+  ok('the last screen hands over to the cue',   T.pageMove(2, 3, 1) === null);
+  ok('paging back stays inside the speech',     T.pageMove(2, 3, -1) === 1);
+  ok('the first screen hands back to the cue',  T.pageMove(0, 3, -1) === null);
+  ok('a speech that fits never pages',          T.pageMove(0, 1, 1) === null);
+  ok('...in either direction',                  T.pageMove(0, 1, -1) === null);
+}
+
+console.log('\nPAGING IN A TAKE — the tap must read the rest of the line before leaving it');
+{
+  const P_ = T.P, S_ = T.S;
+  const tall = { offsetTop:0, offsetHeight:2400, classList:{ _s:new Set(),
+      add(...a){a.forEach(x=>this._s.add(x))}, remove(...a){a.forEach(x=>this._s.delete(x))},
+      toggle(x,on){ on?this._s.add(x):this._s.delete(x) }, contains(x){return this._s.has(x)} } };
+  const short = { ...tall, offsetHeight:120, classList:{ ...tall.classList, _s:new Set() } };
+
+  S_.set.font = 52;                       // band 700, step ~630 -> the tall line is 4 screens
+  S_.cast = { A:{ role:'me', voice:'' } };
+  P_.on = true; P_.paused = false; P_.busy = false; P_.done = false; P_.mode = 'tap';
+  P_.view = [{speaker:'A',kind:'line',text:'a long teaching block'},
+             {speaker:'A',kind:'line',text:'the next thing said'}];
+  P_.cues = [0,1];
+
+  // the long speech first
+  P_.els = [tall, short];
+  P_.idx = 0; P_.sub = 0;
+  const pages = T.pageCount(2400, 700, 700 - 52*1.34);
+  ok(`the long speech is ${pages} screens`, pages === 4);
+
+  T.step(1);
+  ok('THE BUG: the first tap turns the page, it does not leave the line',
+     P_.idx === 0 && P_.sub === 1);
+  T.step(1); T.step(1);
+  ok('it walks to the foot of the speech', P_.idx === 0 && P_.sub === pages-1);
+  T.step(1);
+  ok('only then does it move on',          P_.idx === 1);
+  T.step(-1);
+  ok('stepping back lands on the foot of the speech before, not its top',
+     P_.idx === 0 && P_.sub === pages-1);
+
+  // a speech that fits must behave exactly as it always did
+  P_.els = [short, short];
+  P_.idx = 0; P_.sub = 0;
+  T.step(1);
+  ok('a normal line still advances on the first tap', P_.idx === 1 && P_.sub === 0);
+  P_.idx = 1; P_.sub = 0;
+  T.step(-1);
+  ok('and still steps back on the first tap',         P_.idx === 0);
+
+  P_.on = false; P_.els = []; P_.sub = 0;
 }
 
 console.log('\nENSURECLIP — the offline path must surface, not hang');

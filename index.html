@@ -194,13 +194,16 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%;bac
 /* prompter */
 #prompter{position:fixed;inset:0;background:var(--black);z-index:100;display:none;overflow:hidden}
 #prompter.on{display:block}
+/* Three lanes, deliberately separated. The progress fill used to be a 1px
+   brass-deep hairline lying under a bright 17px focus bracket, so the only
+   thing the eye caught on the rail was the bracket - which never moves. It
+   read as "you are here", and at the end of a script it still said 38%. */
 #rail{position:absolute;left:0;top:0;bottom:0;width:34px;z-index:3;pointer-events:none}
-#railLine{position:absolute;left:16px;top:0;bottom:0;width:1px;background:var(--edge)}
-#railFill{position:absolute;left:16px;top:0;width:1px;background:var(--brass-deep);height:0;transition:height .4s ease}
-#railMark{position:absolute;left:8px;width:17px;height:1px;background:var(--brass);opacity:.85}
-#railMark::before,#railMark::after{content:'';position:absolute;top:-3px;width:1px;height:7px;background:var(--brass)}
-#railMark::before{left:0}#railMark::after{right:0}
-#railLevel{position:absolute;left:16px;width:1px;background:var(--cool);height:0;transition:height .06s linear,opacity .2s;opacity:0}
+#railLine{position:absolute;left:15px;top:0;bottom:0;width:4px;border-radius:2px;background:var(--edge)}
+#railFill{position:absolute;left:15px;top:0;width:4px;border-radius:2px;background:var(--brass);height:0;transition:height .4s ease}
+/* the eye line, not a position: outside the bar, dim, and it never crosses it */
+#railMark{position:absolute;left:6px;width:6px;height:1px;background:var(--brass);opacity:.4}
+#railLevel{position:absolute;left:23px;width:2px;border-radius:1px;background:var(--cool);height:0;transition:height .06s linear,opacity .2s;opacity:0}
 #stagewrap{position:absolute;inset:0;overflow:hidden}
 #stage{position:absolute;left:0;right:0;top:0;padding:0 7vw 0 calc(34px + 5vw);will-change:transform}
 @media(max-width:820px){#stage{padding:0 6vw 0 calc(34px + 4vw)}}
@@ -218,6 +221,10 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%;bac
 .veil{position:absolute;left:0;right:0;height:22vh;z-index:2;pointer-events:none}
 .veil.t{top:0;background:linear-gradient(to bottom,var(--black) 12%,transparent)}
 .veil.b{bottom:0;background:linear-gradient(to top,var(--black) 12%,transparent)}
+#more{position:absolute;left:0;right:0;bottom:74px;z-index:5;pointer-events:none;text-align:center;
+  font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--brass);opacity:0;transition:opacity .3s}
+#more.on{opacity:.72}
 #chrome{position:absolute;left:0;right:0;bottom:0;z-index:6;padding:16px 22px calc(16px + env(safe-area-inset-bottom));
   display:flex;gap:8px;align-items:center;flex-wrap:wrap;
   background:linear-gradient(to top,rgba(20,16,13,.94),transparent);opacity:.28;transition:opacity .3s}
@@ -414,6 +421,7 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%;bac
   <div id="stagewrap"><div id="mirrorwrap"><div id="stage"></div></div></div>
   <div class="veil t"></div><div class="veil b"></div>
   <div id="rail"><div id="railLine"></div><div id="railFill"></div><div id="railLevel"></div><div id="railMark"></div></div>
+  <div id="more" aria-hidden="true">more of this line ⌄</div>
   <div id="tapz"></div>
   <div id="status"><span id="statusDot"></span><span id="statusText">Ready</span></div>
   <div id="chrome">
@@ -597,7 +605,7 @@ const Sync = {
 
 /* bump on every deploy - it is the only way to tell a stale cached app from a
    fix that did not work, and we have already lost a round to that ambiguity */
-const BUILD = 'r14 · 2026-08-14';
+const BUILD = 'r15 · 2026-08-16';
 
 const DEFAULTS = { mode:'cue', silence:1600, sens:5, speed:46, font:52, focus:38,
   mirror:false, names:true, dirs:true, engine:'system', elKey:'',
@@ -2034,7 +2042,8 @@ const Listener = {
 const P = {
   on:false, mode:'cue', idx:0, cues:[], els:[], paused:false,
   wake:null, scrollY:0, lastT:0, raf:0, cueState:null, busy:false, wps:2.2, view:[],
-  done:false        // the scene has reached its end; the cue loop must stop driving it
+  done:false,       // the scene has reached its end; the cue loop must stop driving it
+  sub:0             // which screenful of the current speech, when it is taller than one
 };
 
 /* Consecutive segments by the same speaker are one speech. Kept apart, you
@@ -2128,13 +2137,59 @@ function applyFont(){
 
 function focusPx(){ return window.innerHeight * (S.set.focus/100); }
 
+/* --- speeches taller than the screen ---------------------------------------
+   Centring a speech puts its middle on the focus mark, which is right until the
+   speech is taller than the screen: then centring throws away both ends at once
+   and nothing in the app could reach them - step() only ever moved between
+   cues, never within one. Sides never hit this; a TAI session block is a whole
+   teaching beat and routinely runs two screens.
+
+   So an oversized speech is read a screenful at a time. Its top is anchored to
+   the band instead of its middle, and P.sub says which screenful is showing. */
+
+function bandTop(){ return window.innerHeight * 0.12; }          // under the top veil
+function bandBottom(){ return window.innerHeight - 92; }         // above the chrome
+function bandH(){ return Math.max(140, bandBottom() - bandTop()); }
+/* one line of overlap, so no sentence falls down the seam between two screens */
+function pageStep(){ return Math.max(100, bandH() - S.set.font * 1.34); }
+
+/* Pure, so the tests can drive them: no DOM, no window, no timers. */
+function pageCount(h, band, step){
+  if(!(h > band)) return 1;
+  return 1 + Math.ceil((h - band) / step);
+}
+/* Where step() lands inside a speech, or null to hand over to the cue move. */
+function pageMove(sub, pages, delta){
+  const next = sub + delta;
+  return (next >= 0 && next < pages) ? next : null;
+}
+
+function pagesIn(el){ return el ? pageCount(el.offsetHeight, bandH(), pageStep()) : 1; }
+function pagesHere(){ return pagesIn(P.els[P.cues[P.idx]]); }
+
 function centerOn(i, animate=true){
   const el = P.els[i]; if(!el) return;
   const stage = $('#stage');
-  const target = focusPx() - (el.offsetTop + el.offsetHeight/2);
+  const pages = pagesIn(el);
+  let target;
+  if(pages === 1){
+    target = focusPx() - (el.offsetTop + el.offsetHeight/2);
+  } else {
+    P.sub = Math.max(0, Math.min(P.sub, pages-1));
+    target = bandTop() - (el.offsetTop + P.sub * pageStep());
+  }
   stage.style.transition = animate ? 'transform .42s cubic-bezier(.25,.8,.35,1)' : 'none';
   stage.style.transform = `translateY(${target}px)`;
   P.scrollY = -target;
+  paintMore(pages);
+}
+
+/* Without this he cannot tell that the next tap turns the page rather than
+   moving to the next speaker - the veil fades the foot of every line alike. */
+function paintMore(pages){
+  const el = $('#more');
+  const more = pages > 1 && P.sub < pages - 1;
+  el.classList.toggle('on', more);
 }
 
 function paintFocus(){
@@ -2148,7 +2203,10 @@ function paintFocus(){
   });
   const pct = P.cues.length ? ((P.idx+1)/P.cues.length)*100 : 0;
   $('#railFill').style.height = pct + '%';
-  $('#pPos').textContent = P.cues.length ? `${P.idx+1} / ${P.cues.length}` : '';
+  const pages = pagesHere();
+  $('#pPos').textContent = P.cues.length
+    ? `${P.idx+1} / ${P.cues.length}` + (pages > 1 ? `  ·  screen ${P.sub+1} of ${pages}` : '')
+    : '';
 }
 
 function setStatus(kind, text){
@@ -2158,7 +2216,7 @@ function setStatus(kind, text){
 }
 
 async function startPrompter(startAt){
-  P.on = true; P.mode = S.set.mode; P.idx = 0; P.paused=false; P.busy=false; P.done=false; P.wps = 2.2; Reader.warned=false;
+  P.on = true; P.mode = S.set.mode; P.idx = 0; P.sub = 0; P.paused=false; P.busy=false; P.done=false; P.wps = 2.2; Reader.warned=false;
   $('#prompter').classList.add('on');
   /* the button keeps its label between takes: P.paused was reset but the control
      still read "Resume", so a fresh take began looking as though it were held */
@@ -2226,7 +2284,14 @@ function stopPrompter(){
 /* --- cue engine --- */
 function newCueState(){
   const seg = P.view[P.cues[P.idx]];
-  const words = seg ? seg.text.trim().split(/\s+/).length : 4;
+  let words = seg ? seg.text.trim().split(/\s+/).length : 4;
+  /* A speech read a screenful at a time must be budgeted a screenful at a time.
+     Left at the whole block's word count, `spoken >= expected * 0.9` could never
+     be satisfied on page one, so the only way to turn the page hands-free was
+     the 2.8s dead-silence rule - an unnatural pause in the middle of a thought.
+     Splitting evenly by page is crude but proportional, and it errs long. */
+  const pages = pagesHere();
+  if(pages > 1) words = Math.max(4, Math.round(words / pages));
   const expected = Math.max(1200, (words / P.wps) * 1000);
   return { t0: performance.now(), words, expected,
            spoke:false, spokeAt:0, lastLoud:0, quietSince:0 };
@@ -2252,7 +2317,7 @@ async function runLoop(){
   cueLoop();
 }
 
-async function advanceInto(i){
+async function advanceInto(i, atEnd=false){
   if(!P.on) return;
   /* Each call supersedes the one before it. Interrupting a reader line - Next,
      Hold, or a jump - leaves the abandoned call parked on an await inside
@@ -2264,6 +2329,7 @@ async function advanceInto(i){
 
   P.done = false;   // any deliberate move re-opens the scene; finish() closes it again
   P.idx = Math.max(0, Math.min(i, P.cues.length-1));
+  P.sub = atEnd ? Math.max(0, pagesHere() - 1) : 0;
   noteMark();
   paintFocus();
   centerOn(P.cues[P.idx]);
@@ -2377,6 +2443,17 @@ function cueLoop(){
 
   if(advanceDecision(st, now, S.set.silence)){
     learnPace(st);
+    /* Hands-free, the pause at the end of a screenful turns the page. Without
+       this branch the mic path called advanceInto directly and jumped to the
+       next speaker with two thirds of his own speech still unread. */
+    const within = pageMove(P.sub, pagesHere(), 1);
+    if(within !== null){
+      P.sub = within;
+      paintFocus();
+      centerOn(P.cues[P.idx]);
+      P.cueState = newCueState();
+      return;
+    }
     if(P.idx >= P.cues.length-1) return finish();
     advanceInto(P.idx+1);
   }
@@ -2447,11 +2524,22 @@ function step(delta){
     P.scrollY += delta * window.innerHeight * 0.28;
     return;
   }
+  /* Walk down an oversized speech before leaving it, and back up it on the way
+     out - otherwise the rest of the line is unreachable. A speech that fits is
+     one page, pageMove returns null on the first press, and nothing changes. */
+  const within = pageMove(P.sub, pagesHere(), delta);
+  if(within !== null){
+    P.sub = within;
+    paintFocus();
+    centerOn(P.cues[P.idx]);
+    return;
+  }
   Reader.stop(); P.busy=false; Listener.gated=false;
   const next = P.idx + delta;
   if(next < 0) return;
   if(next > P.cues.length-1) return finish();
-  advanceInto(next);
+  /* stepping back lands on the foot of the speech before, where he stopped reading */
+  advanceInto(next, delta < 0);
 }
 
 
@@ -2463,7 +2551,7 @@ $('#pExit').addEventListener('click', ()=>{ stopPrompter(); resizeAll(); });
 $('#pRestart').addEventListener('click',()=>{
   Reader.stop(); P.busy=false; Listener.gated=false;
   if(P.mode==='scroll'){ P.scrollY=0; }
-  else { P.idx=0; paintFocus(); centerOn(P.cues[0],true); P.cueState=newCueState(); advanceInto(0); }
+  else { P.idx=0; P.sub=0; paintFocus(); centerOn(P.cues[0],true); P.cueState=newCueState(); advanceInto(0); }
 });
 $('#pPause').addEventListener('click',()=>{
   P.paused=!P.paused;
@@ -2476,7 +2564,8 @@ $('#pFontUp').addEventListener('click',()=>bumpFont(4));
 $('#pFontDn').addEventListener('click',()=>bumpFont(-4));
 function bumpFont(d){
   S.set.font = Math.max(22, Math.min(140, S.set.font + d));
-  applyFont(); if(P.mode!=='scroll') centerOn(P.cues[P.idx], false); save();
+  // resizing changes how many screens a speech takes; centerOn clamps P.sub, then the counter follows
+  applyFont(); if(P.mode!=='scroll'){ centerOn(P.cues[P.idx], false); paintFocus(); } save();
 }
 $('#pMirror').addEventListener('click',()=>{
   S.set.mirror = !S.set.mirror;
