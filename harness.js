@@ -382,6 +382,38 @@ console.log('\nSTOPPING — reported from a real take: pressing Done spoke the l
   T.Reader.sayWithSpeech = realSpeech; T.S.set.engine = 'elevenlabs';
 }
 
+console.log('\nWHAT IS GENERATED MUST BE WHAT IS PLAYED');
+{
+  /* Reported: "I pressed Hold and the voice switched to the free voice."
+     Nothing to do with Hold. prepareReader generated clips from S.segs while
+     the take looked them up from the MERGED view, so every joined speech
+     missed its clip and fell through to the system voice. */
+  T.S.set.engine = 'openai'; T.S.set.oaModel = 'gpt-4o-mini-tts';
+  T.S.segs = T.segsFromText('MARA\nOne line here.\n\nMARA\nAnd the rest of it.\n\nDANIEL\nReply.').segs;
+  T.S.cast = { MARA:{role:'reader',voice:'nova',dir:''}, DANIEL:{role:'me',voice:''} };
+  T.S.set.dirs = true;
+
+  const view   = T.mergedView();
+  const merged = view.filter(s=>s.kind==='line' && s.speaker==='MARA');
+  ok('the two MARA speeches merge into one block', merged.length === 1);
+
+  // what the take asks for
+  const asked = T.clipKey('nova', merged[0].text, T.engineModel(), '');
+  // what the OLD prepareReader made, per raw segment
+  const madeOld = T.S.segs.filter(s=>s.kind==='line' && s.speaker==='MARA')
+                          .map(s=>T.clipKey('nova', s.text, T.engineModel(), ''));
+  ok('THE BUG: per-segment clips never match the merged lookup',
+     madeOld.indexOf(asked) === -1);
+
+  // what prepareReader makes now, from the same view the prompter reads
+  const madeNow = T.mergedView().filter(s=>s.kind==='line' && T.S.cast[s.speaker]?.role==='reader')
+                                .map(s=>T.clipKey('nova', s.text, T.engineModel(), ''));
+  ok('generating from the view matches what is played', madeNow.indexOf(asked) !== -1);
+  ok('one merged speech means one clip, not two',       madeNow.length === 1);
+
+  T.S.set.engine = 'elevenlabs';
+}
+
 console.log('\nRESUME AND GO TO — a saved position must survive an edit, or not be offered');
 {
   const view = [

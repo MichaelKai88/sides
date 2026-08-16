@@ -169,7 +169,9 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%;bac
 @media(max-width:640px){ #btnResume{order:5;flex:1 1 100%} }
 
 /* Go to — one list, scroll it or search it. Same panel before and during a take. */
-#goto{position:fixed;inset:0;z-index:60;background:rgba(8,6,4,.94);display:none}
+/* above the prompter (100), below the toast (200) - at 60 it opened BEHIND the
+   prompter during a take, invisible, while taps fell through to the tap zone */
+#goto{position:fixed;inset:0;z-index:150;background:rgba(8,6,4,.97);display:none}
 #goto.on{display:block}
 .gt-inner{max-width:820px;margin:0 auto;height:100%;display:flex;flex-direction:column;padding:18px 16px 0}
 .gt-head{display:flex;gap:10px;align-items:center;flex:none;padding-bottom:12px}
@@ -595,7 +597,7 @@ const Sync = {
 
 /* bump on every deploy - it is the only way to tell a stale cached app from a
    fix that did not work, and we have already lost a round to that ambiguity */
-const BUILD = 'r12 · 2026-08-14';
+const BUILD = 'r13 · 2026-08-14';
 
 const DEFAULTS = { mode:'cue', silence:1600, sens:5, speed:46, font:52, focus:38,
   mirror:false, names:true, dirs:true, engine:'system', elKey:'',
@@ -1754,7 +1756,11 @@ async function ensureClip(voiceId, text, instructions){
 /* Everything the reader will say is generated up front. During the take there
    is no network call at all - playback is a local audio file. */
 async function prepareReader(){
-  const lines = S.segs.filter(s=>s.kind==='line' && !s.out && S.cast[s.speaker]?.role==='reader');
+  /* Generate from the SAME view the prompter will read from. Iterating S.segs
+     meant that wherever mergedView() joins two speeches by one character, the
+     clip was made for each half while the take looked up the joined text - no
+     match, and the line fell through to the system voice. */
+  const lines = mergedView().filter(s=>s.kind==='line' && S.cast[s.speaker]?.role==='reader');
   if(!lines.length) return true;
   const oa = S.set.engine==='openai';
   if(oa ? !S.set.oaKey : !S.set.elKey){
@@ -2154,6 +2160,11 @@ function setStatus(kind, text){
 async function startPrompter(startAt){
   P.on = true; P.mode = S.set.mode; P.idx = 0; P.paused=false; P.busy=false; P.done=false; P.wps = 2.2; Reader.warned=false;
   $('#prompter').classList.add('on');
+  /* the button keeps its label between takes: P.paused was reset but the control
+     still read "Resume", so a fresh take began looking as though it were held */
+  $('#pPause').textContent = 'Hold';
+  $('#pPause').setAttribute('aria-pressed','false');
+  closeGoto();
   $('#mirrorwrap').classList.toggle('on', S.set.mirror);
   $('#pMirror').setAttribute('aria-pressed', S.set.mirror?'true':'false');
   $('#grpSpeed').style.display = P.mode==='scroll' ? 'flex' : 'none';
