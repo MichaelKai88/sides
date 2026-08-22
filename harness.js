@@ -73,7 +73,7 @@ new vm.Script(js + '\n;globalThis.__T={Reader,advanceDecision,newCueState,S,P,se
                  + 'cueLoopAction,finish,stripMarkdown,nameOf,advanceInto,cuesOf,markCue,gotoRows,gotoMatch,relTime,'
                  + 'pageCount,pageMove,step,insertAfterId,moveById,'
                  + 'voiceOf,setVoiceOf,voicesReady,migrateCast,engineOfVoice,engineOfCast,copyCast,renderCast,syncCast,'
-                 + 'findCachedVoice,candidateTexts,recoveryCandidates,readerText};')
+                 + 'findCachedVoice,candidateTexts,recoveryCandidates,readerText,History,save,Store};')
   .runInContext(sandbox);
 const T = sandbox.__T;
 
@@ -892,6 +892,109 @@ console.log('\nRECOVERY — the engine on the script is exactly what cannot be t
      new Set(T.recoveryCandidates('CLIENT').filter(c=>c.engine==='openai').map(c=>c.model)).size === 2);
   ok('every one of the 13 OpenAI voices is tried',
      new Set(T.recoveryCandidates('CLIENT').filter(c=>c.engine==='openai').map(c=>c.voice)).size === 13);
+}
+
+console.log('\nSYNC — opening the app must never overwrite newer work elsewhere');
+{
+  const S_ = T.S, Sync = T.Sync;
+
+  /* Michael lost a day of work on a script that existed only in the working
+     slot. Every copy - this device, the other device and the server - came back
+     as a coherent snapshot from a week earlier.
+
+     Cause: Sync.boot() fires pull() WITHOUT awaiting it, and boot() then calls
+     refresh() -> save() -> Sync.mark(), which sets dirty. When the in-flight
+     pull landed it saw dirty, concluded "this device is ahead", and pushed the
+     stale local state over the newer server one - never applying what was
+     there. Whichever device was opened LAST won, however old its data was. */
+
+  const realRpc = Sync.rpc;
+  let pushed = null;
+
+  const base = { cast:{}, set:{...S_.set}, scripts:[], paste:'', mark:null };
+  const stale = { ...base, segs:[{id:1,kind:'line',speaker:'MARA',text:'week old'}], name:'stale' };
+  const fresh = { ...base, segs:[{id:9,kind:'line',speaker:'MARA',text:'todays work'}], name:'BOOKSTORE' };
+
+  Sync.rpc = async (fn, body) => {
+    if(fn === 'sync_push'){ pushed = body.p_blob; return { ok:true, data:'ts-push' }; }
+    return { ok:true, data:[{ updated_at:'ts-server', blob:fresh }] };
+  };
+
+  Sync.code = 'test-code'; Sync.on = true; Sync.lastTs = null;
+  Sync.dirty = false; Sync.hold = false; Sync.busy = false;
+  T.applyState(stale);
+
+  // exactly what boot() now does: hold pushes, pull un-awaited, quiet write-back
+  Sync.hold = true;
+  const inFlight = Sync.pull();
+  Sync.mark(T.stateBlob(), true);            // boot's own save, marked quiet
+  ok('THE BUG: booting does not mark the device dirty', Sync.dirty === false);
+  await inFlight;
+  Sync.hold = false;
+
+  ok('so the pull applies the newer state instead of pushing over it',
+     S_.name === 'BOOKSTORE' && pushed === null);
+  ok('the server version it saw is remembered', Sync.lastTs === 'ts-server');
+
+  // a REAL edit after boot must still mark dirty
+  Sync.mark(T.stateBlob(), false);
+  ok('a genuine edit still marks the device dirty', Sync.dirty === true);
+  clearTimeout(Sync.timer);
+
+  /* and the whole point: what was about to be replaced is kept */
+  ok('the state the pull replaced was snapshotted first',
+     (await T.History.list()).some(r => r.name === 'stale'));
+
+  /* The case `quiet` actually exists for. If the pull FAILS - the device is
+     offline, or the network is slow enough that hold has already lapsed - then
+     boot's own write-back is the only thing that marks this device dirty, and
+     the next time it reaches the network it pushes week-old data over whatever
+     the server has. That is the exact path that destroyed the script. */
+  Sync.rpc = async () => ({ ok:false, status:0 });      // offline
+  Sync.lastTs = null; Sync.dirty = false; Sync.hold = false; pushed = null;
+  T.applyState(stale);
+  const failed = Sync.pull();
+  Sync.mark(T.stateBlob(), true);                       // boot's write-back, offline
+  await failed;
+  ok('THE BUG: a failed pull plus boot\'s own save must not arm a stale push',
+     Sync.dirty === false);
+
+  Sync.rpc = realRpc; Sync.on = false; Sync.code = ''; Sync.dirty = false; Sync.lastTs = null;
+}
+
+console.log('\nHISTORY — nothing may replace the working script without keeping it');
+{
+  const S_ = T.S;
+
+  S_.segs = T.segsFromText('MARA\nOne line.\n\nDANIEL\nAnother line.').segs;
+  S_.cast = { MARA:{role:'me',voices:{}}, DANIEL:{role:'reader',voices:{}} };
+  S_.name = 'Bookstore on Grace Street';
+  const spoken = S_.segs.filter(x=>x.kind==='line').length;
+  ok('the fixture really has two spoken lines', spoken === 2);
+
+  const rec = await T.History.take('replaced by your other device');
+  ok('a snapshot records the script it saved', !!rec && rec.name === 'Bookstore on Grace Street');
+  ok('and how much was in it',                 rec.lines === 2);
+
+  // something replaces the working script
+  S_.segs = T.segsFromText('CLAIRE\nSomething else entirely.').segs;
+  S_.name = 'Other';
+  /* deliberately NOT snapshotted here - restoring must be what keeps it, or
+     restoring the wrong version becomes a second way to lose work */
+  const all = await T.History.list();
+  ok('the snapshot survives the replacement',
+     all.some(r => r.name === 'Bookstore on Grace Street'));
+
+  const idx = all.findIndex(r => r.name === 'Bookstore on Grace Street');
+  const back = await T.History.restore(idx);
+  ok('restoring brings the script back', !!back && S_.name === 'Bookstore on Grace Street');
+  ok('and it has its lines again',       S_.segs.filter(x=>x.kind==='line').length === 2);
+
+  ok('restoring also keeps what it replaced, so it is never a one-way door',
+     (await T.History.list()).some(r => r.name === 'Other'));
+
+  S_.segs = [];
+  ok('an empty script is not worth snapshotting', (await T.History.take('x')) === null);
 }
 
 console.log('\nENSURECLIP — the offline path must surface, not hang');

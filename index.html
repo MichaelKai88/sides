@@ -84,6 +84,13 @@ h2.sec{font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;color:var(
 .chip b{font-weight:500}
 /* which engine this script is set up for - a script that reads in ElevenLabs
    and one that reads in OpenAI are not interchangeable, so say so */
+#histWrap{margin:-4px 0 18px}
+.hist-row{display:grid;grid-template-columns:auto 1fr auto auto;gap:12px;align-items:center;
+  padding:7px 0;border-bottom:1px solid rgba(46,39,33,.55);font-size:12.5px}
+.hist-when{font-family:var(--mono);font-size:10.5px;color:var(--brass);white-space:nowrap}
+.hist-name{color:var(--bone)}
+.hist-meta{color:var(--bone-faint);font-size:11.5px}
+@media(max-width:640px){.hist-row{grid-template-columns:1fr auto}.hist-meta{grid-column:1/-1}}
 .chip .eng{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
   color:var(--bone-faint);border:1px solid var(--edge);border-radius:2px;padding:1px 4px;margin-left:7px}
 .chip .x{color:var(--bone-faint);font-size:15px;line-height:1;padding:2px 3px}
@@ -277,6 +284,10 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%;bac
 
   <section class="panel on" data-panel="0">
     <div class="lib" id="lib"></div>
+    <div id="histWrap" style="display:none">
+      <button class="btn ghost" id="histToggle">Earlier versions</button>
+      <div id="histList"></div>
+    </div>
 
     <div id="importWrap">
       <h2 class="sec">Bring in the sides</h2>
@@ -477,6 +488,51 @@ const Store = (()=>{
   };
 })();
 
+/* ---------- version history ----------
+   A day of work was lost because a stale device pushed its state over a newer
+   one and every copy was overwritten at once. The sync race that allowed it is
+   fixed below, but no fix earns the right to be trusted with unsaved work: this
+   keeps the last few states so that ANY loss - a bad sync, Start over, loading
+   the wrong script, a bug not yet found - can be undone.
+
+   A snapshot is taken BEFORE something replaces the working script, because
+   those are the only moments work disappears, plus a slow heartbeat while
+   editing so a crash costs minutes rather than everything. */
+const History = {
+  KEY:'sides:hist', MAX:12, MAXB:2200000, lastBeat:0,
+  async list(){ const a = await Store.get(this.KEY); return Array.isArray(a) ? a : []; },
+  async take(reason){
+    if(!S.segs.length) return null;                 // nothing to lose yet
+    let blob; try{ blob = stateBlob(); }catch(e){ return null; }
+    const rec = { at:Date.now(), reason, name:S.name || 'Unnamed script',
+                  lines:S.segs.filter(s=>s.kind==='line' && !s.out).length, blob };
+    const all = await this.list();
+    const same = all[0] && JSON.stringify(all[0].blob.segs) === JSON.stringify(blob.segs);
+    if(same) all[0] = rec; else all.unshift(rec);
+    let out = all.slice(0, this.MAX);
+    // localStorage is finite; drop the oldest until it fits rather than throwing
+    while(out.length > 1 && JSON.stringify(out).length > this.MAXB) out.pop();
+    await Store.set(this.KEY, out);
+    this.lastBeat = Date.now();
+    return rec;
+  },
+  /* while editing, at most one every ten minutes - enough to bound a loss
+     without turning every keystroke into a 78 KB write */
+  beat(){
+    if(Date.now() - this.lastBeat < 600000) return;
+    this.lastBeat = Date.now();
+    Promise.resolve(this.take('autosave while editing')).catch(()=>{});
+  },
+  async restore(i){
+    const all = await this.list();
+    const rec = all[i]; if(!rec) return null;
+    await this.take('replaced by restoring an earlier version');
+    applyState(rec.blob);
+    try{ renderLib(); refresh(); refreshSettingsUI(); renderHist(); }catch(e){}
+    return rec;
+  }
+};
+
 /* ============================================================
    sync — optional, never blocking, never during a take
 
@@ -524,10 +580,16 @@ const Sync = {
     finally{ if(t) clearTimeout(t); }
   },
 
-  /* called by save() with the blob it just wrote locally - one serialisation, not two */
-  mark(blob){
+  /* called by save() with the blob it just wrote locally - one serialisation, not two.
+
+     `quiet` means "this write is not an edit": booting writes the state straight
+     back out again, and counting that as a local change is what destroyed a day
+     of work. The un-awaited pull below would land, see dirty, conclude this
+     device was ahead, and push the stale local state over a newer server one -
+     so whichever device was opened LAST won, however old its data was. */
+  mark(blob, quiet){
     this.last = blob;
-    if(!this.ready() || this.hold) return;
+    if(!this.ready() || this.hold || quiet) return;
     this.dirty = true;
     clearTimeout(this.timer);
     this.timer = setTimeout(()=>{ this.push(); }, 1500);
@@ -539,7 +601,8 @@ const Sync = {
     this.busy = true;
     const r = await this.rpc('sync_push', { p_code:this.code, p_blob:blob });
     this.busy = false;
-    if(r.ok){ this.lastTs = r.data; this.dirty = false; this.say('everything saved'); return true; }
+    if(r.ok){ this.lastTs = r.data; this.dirty = false; await this.persist();
+              this.say('everything saved'); return true; }
     this.say('offline — saved on this device');
     return false;
   },
@@ -554,10 +617,14 @@ const Sync = {
     if(!row){ this.say('nothing stored under this code yet'); return false; }
     if(row.updated_at === this.lastTs){ this.say('up to date'); return false; }
     if(this.dirty && !this.hold){ this.say('this device is ahead — sending'); this.push(); return false; }
+    /* whatever is about to be replaced is kept first - this is the one thing
+       that makes a bad sync survivable rather than final */
+    try{ await History.take('replaced by your other device'); }catch(e){}
     try{ applyState(row.blob); }catch(e){ this.say('could not read what was stored'); return false; }
     this.lastTs = row.updated_at;
     this.dirty = false;
-    try{ renderLib(); refresh(); refreshSettingsUI(); }catch(e){}
+    await this.persist();
+    try{ renderLib(); refresh(); refreshSettingsUI(); renderHist(); }catch(e){}
     this.say('updated from your other device');
     return true;
   },
@@ -605,18 +672,27 @@ const Sync = {
     }catch(e){ return false; }
   },
 
-  async persist(){ await Store.set('sides:sync', { code:this.code, on:this.on }); },
+  /* lastTs is persisted so a device knows, across restarts, which server version
+     it has already seen. Without it every boot looked like a first contact. */
+  async persist(){ await Store.set('sides:sync', { code:this.code, on:this.on, lastTs:this.lastTs }); },
   async boot(){
     const d = await Store.get('sides:sync');
-    if(d){ this.code = tidyCode(d.code); this.on = !!d.on; }
+    if(d){ this.code = tidyCode(d.code); this.on = !!d.on; this.lastTs = d.lastTs || null; }
     this.say(this.ready() ? 'checking…' : 'off');
-    if(this.ready()) this.pull();          // deliberately not awaited: startup must not wait on a network
+    if(!this.ready()) return;
+    /* Still not awaited - startup must never wait on a network (design rule 1).
+       But nothing may be PUSHED until the pull has settled, or a device with
+       stale data overwrites a good server state simply by being opened. */
+    this.hold = true;
+    const done = ()=>{ this.hold = false; };
+    this.pull().then(done, done);
+    setTimeout(done, 9000);                // the rpc times out at 8s; never hold forever
   }
 };
 
 /* bump on every deploy - it is the only way to tell a stale cached app from a
    fix that did not work, and we have already lost a round to that ambiguity */
-const BUILD = 'r18 · 2026-08-22';
+const BUILD = 'r19 · 2026-08-22';
 
 const DEFAULTS = { mode:'cue', silence:1600, sens:5, speed:46, font:52, focus:38,
   mirror:false, names:true, dirs:true, engine:'system', elKey:'',
@@ -1703,6 +1779,7 @@ function refresh(){ syncCast(); renderLines(); renderCast(); updateLaunch(); sav
    ingest wiring
    ============================================================ */
 function afterParse(result, label){
+  History.take('replaced by a newly imported script');   // before anything is overwritten
   S.segs = result.segs;
   S.cast = {}; S.showTrim = false; S.name = label || ''; S.fileHint = label || '';
   if(!S.segs.length){ toast("Nothing readable in that. Try pasting the text instead."); return; }
@@ -1786,6 +1863,7 @@ $('#doParse').addEventListener('click',()=>{
 $('#loadSample').addEventListener('click',()=>{ S.pages=[]; afterParse(segsFromText(SAMPLE), 'Sample scene'); });
 
 $('#startOver').addEventListener('click',()=>{
+  History.take('cleared with Start over');
   S.segs=[]; S.cast={}; S.pages=[]; S.name=''; $('#paste').value='';
   $('#editWrap').style.display='none'; $('#importWrap').style.display='block';
   refresh();
@@ -1803,6 +1881,34 @@ $('#dropDirs').addEventListener('click',()=>{
   toast(`Removed ${before-S.segs.length} direction lines.`);
 });
 
+/* ---------- earlier versions ---------- */
+let histOpen = false;
+async function renderHist(){
+  const wrap=$('#histWrap'), list=$('#histList'); if(!wrap) return;
+  const all = await History.list();
+  wrap.style.display = all.length ? 'block' : 'none';
+  $('#histToggle').textContent = histOpen ? 'Hide earlier versions' : `Earlier versions (${all.length})`;
+  list.style.display = histOpen ? 'block' : 'none';
+  if(!histOpen) return;
+  list.innerHTML='';
+  all.forEach((rec,i)=>{
+    const row=document.createElement('div'); row.className='hist-row';
+    const when=relTime(rec.at);
+    row.innerHTML = `<span class="hist-when">${esc(when)}</span>`
+      + `<span class="hist-name">${esc(rec.name)}</span>`
+      + `<span class="hist-meta">${rec.lines} ${rec.lines===1?'line':'lines'} · ${esc(rec.reason||'')}</span>`;
+    const b=document.createElement('button'); b.className='btn ghost'; b.textContent='Restore';
+    b.addEventListener('click', async ()=>{
+      b.disabled=true; b.textContent='…';
+      const got = await History.restore(i);
+      toast(got ? `Restored "${got.name}" — ${got.lines} lines. The version you had is kept too.`
+                : 'That version could not be read.', 5200);
+    });
+    row.appendChild(b); list.appendChild(row);
+  });
+}
+$('#histToggle').addEventListener('click', ()=>{ histOpen=!histOpen; renderHist(); });
+
 /* ---------- script library ---------- */
 function renderLib(){
   const box=$('#lib'); box.innerHTML='';
@@ -1816,6 +1922,7 @@ function renderLib(){
     const b=document.createElement('button');
     b.innerHTML=`<b>${esc(sc.name)}</b>`+(eng?`<span class="eng">${ENGINE_NAME[eng]||eng}</span>`:'');
     b.addEventListener('click',()=>{
+      History.take(`replaced by loading "${sc.name}"`);
       S.segs=sc.segs.map(s=>({...s}));
       S.cast=migrateCast(copyCast(sc.cast));      // a copy: the library is not the live cast
       S.pages=[]; S.name=sc.name; S.showTrim=false;
@@ -2943,12 +3050,18 @@ function stateBlob(){
     scripts:S.scripts, paste:$('#paste').value, mark:S.mark
   };
 }
+/* true until boot has finished wiring the UI. boot() writes the state straight
+   back out again, and letting that count as a local edit is what let a stale
+   device win a sync it should have lost. */
+let BOOTING = true;
 function save(){
   clearTimeout(saveTimer);
+  const quiet = BOOTING;
   saveTimer=setTimeout(()=>{
     const blob = stateBlob();
     Store.set('sides:v2', blob);
-    Sync.mark(blob);
+    Sync.mark(blob, quiet);
+    if(!quiet) History.beat();
   },400);
 }
 function applyState(d){
@@ -2981,7 +3094,8 @@ async function boot(){
   if(localMark && (!S.mark || (localMark.at||0) > (S.mark.at||0))) S.mark = localMark;
   await Sync.boot();
   const stamp=$('#buildStamp'); if(stamp) stamp.textContent = BUILD;
-  renderLib(); refresh(); refreshSettingsUI(); listDevices();
+  renderLib(); refresh(); refreshSettingsUI(); listDevices(); renderHist();
+  BOOTING = false;
   navigator.mediaDevices?.addEventListener?.('devicechange', listDevices);
 }
 
