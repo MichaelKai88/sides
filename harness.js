@@ -71,7 +71,7 @@ new vm.Script(js + '\n;globalThis.__T={Reader,advanceDecision,newCueState,S,P,se
                  + 'Sync,stateBlob,applyState,newSyncCode,tidyCode,ensureClip,EL,'
                  + 'OA,OA_VOICES,usesClips,engineModel,castDir,englishVoices,hashKey,EL_MODEL,pickVoice,'
                  + 'cueLoopAction,finish,stripMarkdown,nameOf,advanceInto,cuesOf,markCue,gotoRows,gotoMatch,relTime,'
-                 + 'pageCount,pageMove,step};')
+                 + 'pageCount,pageMove,step,insertAfterId,moveById};')
   .runInContext(sandbox);
 const T = sandbox.__T;
 
@@ -701,6 +701,50 @@ console.log('\nPAGING IN A TAKE — the tap must read the rest of the line befor
   ok('and still steps back on the first tap',         P_.idx === 0);
 
   P_.on = false; P_.els = []; P_.sub = 0;
+}
+
+console.log('\nEDITING — a line must be placeable where it is needed, not only at the end');
+{
+  const ids = a => a.map(s=>s.id).join('');
+  const base = () => ([{id:1,out:false},{id:2,out:false},{id:3,out:false},{id:4,out:false}]);
+
+  const ins = T.insertAfterId(base(), 2, {id:9,out:false});
+  ok('a new line lands directly below the one it was added from', ids(ins) === '12934');
+  ok('and nothing else is disturbed',                             ins.length === 5);
+
+  ok('an id that is not there appends rather than throwing the line away',
+     ids(T.insertAfterId(base(), 77, {id:9,out:false})) === '12349');
+
+  ok('down swaps with the line below',  ids(T.moveById(base(), 2,  1)) === '1324');
+  ok('up swaps with the line above',    ids(T.moveById(base(), 3, -1)) === '1324');
+  ok('two presses walk it two places',  ids(T.moveById(T.moveById(base(), 4, -1), 4, -1)) === '1423');
+
+  ok('up at the top does nothing at all',      ids(T.moveById(base(), 1, -1)) === '1234');
+  ok('down at the bottom does nothing at all', ids(T.moveById(base(), 4,  1)) === '1234');
+  ok('an unknown id does nothing at all',      ids(T.moveById(base(), 77, 1)) === '1234');
+
+  /* THE BUG this guards: trimmed lines are hidden unless "Show them" is on. A
+     move of one array index can swap a line with something off screen, and the
+     press then looks like it did nothing at all. It must land past the next
+     VISIBLE line. */
+  const trimmed = [{id:1,out:false},{id:2,out:false},{id:3,out:true},{id:4,out:false}];
+  const shown = s => !s.out;
+  ok('THE BUG: moving down steps over a trimmed line and visibly moves',
+     ids(T.moveById(trimmed, 2, 1, shown)) === '1342');
+  ok('moving up steps over it the other way',
+     ids(T.moveById(trimmed, 4, -1, shown)) === '1423');
+  ok('with the trimmed lines shown, the same press moves one place only',
+     ids(T.moveById(trimmed, 2, 1, ()=>true)) === '1324');
+  ok('a run of trimmed lines below pins the last visible line where it is',
+     ids(T.moveById([{id:1,out:false},{id:2,out:false},{id:3,out:true}], 2, 1, shown)) === '123');
+
+  /* nothing may ever be lost, whatever the press */
+  let keep = base(), every = true;
+  [[1,-1],[4,1],[2,1],[3,-1],[77,1],[1,1]].forEach(([id,d])=>{
+    keep = T.moveById(keep, id, d, shown);
+    if(keep.length !== 4 || new Set(keep.map(s=>s.id)).size !== 4) every = false;
+  });
+  ok('no sequence of moves ever loses or duplicates a line', every);
 }
 
 console.log('\nENSURECLIP — the offline path must surface, not hang');

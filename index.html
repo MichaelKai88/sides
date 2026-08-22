@@ -113,7 +113,7 @@ h2.sec{font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;color:var(
 .ln textarea:focus{border-color:var(--edge-lit);background:var(--pit);outline:none}
 .ln .acts{display:flex;gap:1px;opacity:0;transition:opacity .15s}
 .ln:hover .acts,.ln:focus-within .acts{opacity:1}
-.ln .acts button{padding:5px 6px;font-size:12px;color:var(--bone-faint);border-radius:2px}
+.ln .acts button{padding:5px 6px;min-width:26px;font-size:12px;color:var(--bone-faint);border-radius:2px}
 .ln .acts button:hover{color:var(--brass);background:var(--raised)}
 .ln .acts button.del:hover{color:var(--red)}
 .ln.is-me textarea{color:var(--bone)}
@@ -123,7 +123,11 @@ h2.sec{font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;color:var(
 .ln.trimmed textarea{text-decoration:line-through}
 .mark{display:inline-block;font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;color:var(--brass);
   border:1px solid var(--brass-deep);border-radius:2px;padding:1px 5px;margin-bottom:4px}
-@media(max-width:640px){.ln{grid-template-columns:1fr auto}.ln select{grid-column:1/-1;max-width:190px}}
+/* there is no hover on a touch screen, so the row actions would never appear
+   at all - on the iPad they are simply always there */
+@media(hover:none){.ln .acts{opacity:1}}
+@media(max-width:640px){.ln{grid-template-columns:1fr}.ln select{max-width:190px}
+  .ln .acts{justify-content:flex-end}}
 
 /* cast */
 .cast-card{border:1px solid var(--edge);border-radius:3px;padding:15px 17px;margin-bottom:10px;background:var(--raised);
@@ -304,7 +308,7 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%;bac
       </div>
       <div class="tools">
         <span class="count" id="lineCount"></span>
-        <button class="btn ghost" id="addLine">Add a line</button>
+        <button class="btn ghost" id="addLine">Add a line at the end</button>
         <button class="btn ghost danger" id="dropDirs">Remove directions</button>
         <button class="btn ghost" id="saveScript">Save this script</button>
         <button class="btn ghost danger" id="startOver">Start over</button>
@@ -605,7 +609,7 @@ const Sync = {
 
 /* bump on every deploy - it is the only way to tell a stale cached app from a
    fix that did not work, and we have already lost a round to that ambiguity */
-const BUILD = 'r15 · 2026-08-16';
+const BUILD = 'r16 · 2026-08-21';
 
 const DEFAULTS = { mode:'cue', silence:1600, sens:5, speed:46, font:52, focus:38,
   mirror:false, names:true, dirs:true, engine:'system', elKey:'',
@@ -1265,8 +1269,47 @@ function litPage(n){
   if(w) w.scrollIntoView({behavior:'smooth',block:'nearest'});
 }
 
+/* Inserting and reordering are pure, per design rule 4 - the row buttons below
+   only supply an id and re-render. Neither can ever lose a segment.
+
+   Both work in VISIBLE order, not array order. Trimmed lines are hidden unless
+   "Show them" is on, so a move that stepped one array index could swap a line
+   with something off screen and look like it did nothing at all. */
+function insertAfterId(segs, id, seg){
+  const k = segs.findIndex(s=>s.id===id);
+  const out = segs.slice();
+  out.splice(k<0 ? out.length : k+1, 0, seg);
+  return out;
+}
+function moveById(segs, id, dir, shown){
+  const vis = s => shown ? !!shown(s) : true;
+  const k = segs.findIndex(s=>s.id===id);
+  if(k<0) return segs;
+  const d = dir<0 ? -1 : 1;
+  let j = k + d;
+  while(j>=0 && j<segs.length && !vis(segs[j])) j += d;   // step over what is not on screen
+  if(j<0 || j>=segs.length) return segs;                  // already at that end - nothing moves
+  const out = segs.slice();
+  out.splice(j, 0, out.splice(k,1)[0]);
+  return out;
+}
+function onScreen(s){ return S.showTrim || !s.out; }
+function newSeg(after){
+  return { id:SEQ++, speaker:(after&&after.speaker)||speakers()[0]?.[0]||'CHARACTER',
+           text:'New line', kind:(after&&after.kind)||'line',
+           page:(after&&after.page)||(S.pages.length?S.pages[S.pages.length-1].n:1), out:false };
+}
+
+/* renderLines rebuilds every row from scratch, so pressing a button that
+   re-renders throws away the focus that a repeated press depends on - walking a
+   line up four places would need four separate clicks on a moving target. This
+   says what to put the focus back on once the new rows exist. */
+let focusAfterRender = null;   // { id, what:'text' | 'up' | 'down' }
+
 function renderLines(){
   const box=$('#lines'); box.innerHTML='';
+  const want = focusAfterRender; focusAfterRender = null;
+  let restore = null;
   const names=speakers().map(s=>s[0]);
   let firstIn=S.segs.findIndex(s=>!s.out), lastIn=-1;
   S.segs.forEach((s,i)=>{ if(!s.out) lastIn=i; });
@@ -1304,7 +1347,7 @@ function renderLines(){
 
     const acts=document.createElement('div'); acts.className='acts';
     const mk=(label,title,fn,cls)=>{ const b=document.createElement('button'); b.textContent=label; b.title=title;
-      if(cls) b.className=cls; b.addEventListener('click',fn); acts.appendChild(b); };
+      if(cls) b.className=cls; b.addEventListener('click',fn); acts.appendChild(b); return b; };
     if(seg.out){
       mk('↺','Bring back into the scene',()=>{ seg.out=false; refresh(); });
     } else {
@@ -1320,11 +1363,36 @@ function renderLines(){
         S.segs.splice(S.segs.indexOf(seg)+1,0,{id:SEQ++,speaker:seg.speaker,text:b,kind:seg.kind,page:seg.page,out:false});
         refresh();
       });
+      mk('+','Add a line below this one',()=>{
+        const fresh=newSeg(seg);
+        S.segs=insertAfterId(S.segs, seg.id, fresh);
+        focusAfterRender={id:fresh.id, what:'text'};
+        refresh();
+      },'add');
+      const up=mk('↑','Move this line up',()=>{
+        S.segs=moveById(S.segs, seg.id, -1, onScreen);
+        focusAfterRender={id:seg.id, what:'up'};
+        refresh();
+      });
+      const dn=mk('↓','Move this line down',()=>{
+        S.segs=moveById(S.segs, seg.id, 1, onScreen);
+        focusAfterRender={id:seg.id, what:'down'};
+        refresh();
+      });
+      if(want && want.id===seg.id && want.what!=='text') restore = want.what==='up' ? up : dn;
     }
     mk('×','Delete this line',()=>{ S.segs=S.segs.filter(x=>x.id!==seg.id); refresh(); },'del');
 
+    if(want && want.id===seg.id && want.what==='text') restore = ta;
     row.append(left,ta,acts); box.appendChild(row); autosize(ta);
   });
+
+  /* the row it belongs to only exists now that the loop has run */
+  if(restore){
+    restore.focus();
+    if(restore.select) restore.select();          // type straight over "New line"
+    if(restore.scrollIntoView) restore.scrollIntoView({block:'nearest'});
+  }
 
   resizeAll();
   const nl=S.segs.filter(s=>s.kind==='line'&&!s.out).length;
@@ -1451,7 +1519,7 @@ function afterParse(result, label){
   const spoken=S.segs.filter(s=>s.kind==='line').length;
   $('#editHint').innerHTML = S.pages.length
     ? `The pages are here so you can see anything the text layer can't — <b>START</b> and <b>END</b> marks, handwriting, crossed-out lines. Use ⤒ and ⤓ on a line to trim to the marked scene.`
-    : `Reassign a speaker with the dropdown, edit text inline, split a line with ⁄, delete anything that isn't dialogue.`;
+    : `Reassign a speaker with the dropdown, edit text inline, split a line with ⁄, add one exactly where you need it with +, nudge it with ↑ ↓, delete anything that isn't dialogue.`;
   refresh();
   renderPages();
   const me = Object.keys(S.cast).find(n=>S.cast[n].role==='me');
@@ -1533,8 +1601,9 @@ $('#startOver').addEventListener('click',()=>{
 $('#showTrim').addEventListener('click',()=>{ S.showTrim=!S.showTrim; renderLines(); });
 $('#clearTrim').addEventListener('click',()=>{ S.segs.forEach(s=>s.out=false); S.showTrim=false; refresh(); });
 $('#addLine').addEventListener('click',()=>{
-  const f=speakers()[0]?.[0]||'CHARACTER';
-  S.segs.push({id:SEQ++,speaker:f,text:'New line',kind:'line',page:S.pages.length?S.pages[S.pages.length-1].n:1,out:false});
+  const fresh=newSeg(null);
+  S.segs.push(fresh);
+  focusAfterRender={id:fresh.id, what:'text'};
   refresh();
 });
 $('#dropDirs').addEventListener('click',()=>{
