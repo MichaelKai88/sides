@@ -616,7 +616,7 @@ const Sync = {
 
 /* bump on every deploy - it is the only way to tell a stale cached app from a
    fix that did not work, and we have already lost a round to that ambiguity */
-const BUILD = 'r17 · 2026-08-21';
+const BUILD = 'r18 · 2026-08-22';
 
 const DEFAULTS = { mode:'cue', silence:1600, sens:5, speed:46, font:52, focus:38,
   mirror:false, names:true, dirs:true, engine:'system', elKey:'',
@@ -684,6 +684,19 @@ const AudioCache = {
     this.mem.clear();
     const db = await this.open(); if(!db) return;
     try{ db.transaction('clips','readwrite').objectStore('clips').clear(); }catch(e){}
+  },
+  /* every key we hold, in one read. Recovery matches candidates against this in
+     memory rather than issuing a get() per candidate - it can then afford to
+     search every engine, model and direction instead of guessing one. */
+  async keys(){
+    const db = await this.open(); if(!db) return [...this.mem.keys()];
+    const ks = await new Promise(res=>{
+      try{
+        const rq = db.transaction('clips','readonly').objectStore('clips').getAllKeys();
+        rq.onsuccess = ()=>res(rq.result || []); rq.onerror = ()=>res([]);
+      }catch(e){ res([]); }
+    });
+    return [...new Set([...ks, ...this.mem.keys()])];
   }
 };
 
@@ -820,11 +833,16 @@ function migrateCast(cast){
   });
   return cast;
 }
-/* Which engine a saved script was set up under, when it predates the field. */
+/* Which engine a saved script was set up under, when it predates the field.
+   A DEVICE voice is not evidence of anything: overwriting a paid voice with a
+   device one is exactly what the old bug did, so inferring "this is a device
+   script" from a device voice just believes the corruption. Only a paid engine
+   counts, and null means we genuinely do not know - in which case nothing is
+   assumed and the engine is left alone. */
 function engineOfCast(cast){
   const hits = {};
-  Object.values(cast || {}).forEach(c => Object.keys(c.voices || {})
-    .forEach(e => { if(c.voices[e]) hits[e] = (hits[e] || 0) + 1; }));
+  Object.values(cast || {}).forEach(c => ['elevenlabs','openai']
+    .forEach(e => { if(c.voices && c.voices[e]) hits[e] = (hits[e] || 0) + 1; }));
   return Object.keys(hits).sort((a,b) => hits[b] - hits[a])[0] || null;
 }
 /* ---------- recovering a voice that was already overwritten ----------
@@ -837,33 +855,85 @@ function engineOfCast(cast){
    hash(model|voice|text) - so the voice is recoverable by asking the cache which
    candidate it already holds audio for. Thirteen local reads, no network, no
    cost. It never overrides a voice that already has its audio. */
-async function recoverVoice(name){
-  if(!usesClips() || !voicesReady()) return null;
-  const list = englishVoices(); if(!list.length) return null;
-  const l = mergedView().find(s => s.kind === 'line' && s.speaker === name);
-  if(!l) return null;
-  const clean = readerText(l.text); if(!clean) return null;
-  const model = engineModel(), dir = castDir(name), cur = voiceOf(name);
-  // whatever is selected already has its audio - leave it alone
-  if(cur && await AudioCache.get(clipKey(cur, clean, model, dir))) return null;
-  for(const v of list){
-    if(v.voiceURI === cur) continue;
-    if(await AudioCache.get(clipKey(v.voiceURI, clean, model, dir))) return v.voiceURI;
-  }
+/* Every text this character's audio could have been generated from. The merged
+   speech is what current builds generate, but the "read the directions" setting
+   changes how speeches merge, and builds before r14 generated per raw segment -
+   so try all of them rather than betting on one. */
+function candidateTexts(name){
+  const out = new Set();
+  mergedView().forEach(s => { if(s.kind==='line' && s.speaker===name) out.add(readerText(s.text)); });
+  S.segs.forEach(s => { if(s.kind==='line' && s.speaker===name) out.add(readerText(s.text)); });
+  out.delete('');
+  return [...out];
+}
+/* Which engine, model, direction and voice this character's cached audio was
+   made with. The engine recorded on the script CANNOT be trusted here - the
+   scripts that need recovering are exactly the ones whose engine was misread,
+   so searching only the current engine finds nothing and reports "nothing to
+   recover", which is what r17 did. Search everything that uses clips.
+
+   All of it is matched against one read of the cache's keys, so the whole
+   search is arithmetic: a few thousand hashes, no round trips, no network. */
+function recoveryCandidates(name){
+  const dirs = [...new Set([S.cast[name]?.dir || '', ''])];
+  const out = [];
+  OA_VOICES.forEach(([id]) => ['gpt-4o-mini-tts','tts-1'].forEach(model =>
+    dirs.forEach(dir => out.push({ engine:'openai', voice:id, model,
+                                   dir: model === 'tts-1' ? '' : dir }))));
+  S.elVoices.forEach(v => out.push({ engine:'elevenlabs', voice:v.voiceURI, model:EL_MODEL, dir:'' }));
+  return out;
+}
+function findCachedVoice(name, have){
+  const texts = candidateTexts(name);
+  if(!texts.length) return null;
+  for(const c of recoveryCandidates(name))
+    for(const t of texts)
+      if(have.has(clipKey(c.voice, t, c.model, c.dir))) return c;
   return null;
 }
 async function recoverVoices(quiet){
-  if(!usesClips() || !voicesReady()) return 0;
-  let n = 0;
-  for(const name of Object.keys(S.cast)){
-    if(S.cast[name].role !== 'reader') continue;
-    const found = await recoverVoice(name);
-    if(found){ setVoiceOf(name, found); n++; }
+  const readers = Object.keys(S.cast).filter(n => S.cast[n].role === 'reader');
+  if(!readers.length){ if(!quiet) toast('No reader characters to match.', 4000); return 0; }
+
+  const have = new Set(await AudioCache.keys());
+  const hits = [], byEngine = {};
+  let already = 0;
+  readers.forEach(name => {
+    const cur = voiceOf(name);
+    // a selection that already has its own audio is left alone
+    if(cur && candidateTexts(name).some(t => have.has(clipKey(cur, t, engineModel(), castDir(name))))){ already++; return; }
+    const hit = findCachedVoice(name, have);
+    if(hit){ hits.push({name, ...hit}); byEngine[hit.engine] = (byEngine[hit.engine]||0) + 1; }
+  });
+
+  if(hits.length){
+    /* adopt the engine the recovered audio actually belongs to, and the model
+       and direction it was made with - a mismatch on any of the three is a
+       different clip key, which means paying for the line all over again */
+    const eng = Object.keys(byEngine).sort((a,b) => byEngine[b] - byEngine[a])[0];
+    const lead = hits.find(h => h.engine === eng);
+    S.set.engine = eng;
+    if(eng === 'openai') S.set.oaModel = lead.model;
+    hits.forEach(h => { if(h.engine !== eng) return;
+      setVoiceOf(h.name, h.voice, eng); S.cast[h.name].dir = h.dir; });
+    const sc = S.scripts.find(x => x.name === S.name);
+    if(sc) sc.engine = eng;                       // repair the engine on the saved copy too
+    refreshSettingsUI(); renderCast(); renderLib(); save();
   }
-  if(n){ renderCast(); save(); }
-  if(!quiet) toast(n ? `Matched ${n} ${n===1?'character':'characters'} to audio already paid for.`
-                     : 'No cached audio matched another voice — nothing to recover.', 4800);
-  return n;
+
+  /* an empty result has three quite different meanings and they must not look
+     the same - "already fine", "the cache has nothing for these lines" and
+     "this device has no cached audio at all" lead to different next steps */
+  if(!quiet){
+    const n = hits.length;
+    toast(
+      n              ? `Matched ${n} ${n===1?'character':'characters'} to audio already paid for — ${ENGINE_NAME[S.set.engine]} voices restored.`
+    : already === readers.length
+                     ? `Nothing to recover — every reader already has the audio it needs.`
+    : have.size      ? `No match. This device holds ${have.size} cached ${have.size===1?'clip':'clips'}, none of them for these lines.`
+                     : 'There is no cached audio on this device to match against.', 6000);
+  }
+  return hits.length;
 }
 
 /* The library used to keep `cast: S.cast` by REFERENCE, so every saved script
@@ -1608,8 +1678,11 @@ function renderCast(){
     if(extra.children.length) card.appendChild(extra);
     box.appendChild(card);
   });
+  /* deliberately NOT gated on usesClips(): a script whose engine was misread as
+     "Device" is precisely the one with paid voices to recover, and hiding the
+     button there is what made r17 useless */
   const row=$('#recoverRow');
-  if(row) row.style.display = (usesClips() && list.some(([n])=>S.cast[n]?.role==='reader')) ? 'flex' : 'none';
+  if(row) row.style.display = list.some(([n])=>S.cast[n]?.role==='reader') ? 'flex' : 'none';
   const n=englishVoices().length;
   $('#voiceNote').textContent =
     S.set.engine==='openai'
@@ -1739,20 +1812,20 @@ function renderLib(){
     /* the engine is part of the script, not a global mood - one script wants
        ElevenLabs and the next wants OpenAI, and switching between them must not
        cost anything or forget anything */
-    const eng = sc.engine || engineOfCast(sc.cast) || 'system';
+    const eng = sc.engine || engineOfCast(sc.cast);      // null = genuinely unknown
     const b=document.createElement('button');
-    b.innerHTML=`<b>${esc(sc.name)}</b><span class="eng">${ENGINE_NAME[eng]||eng}</span>`;
+    b.innerHTML=`<b>${esc(sc.name)}</b>`+(eng?`<span class="eng">${ENGINE_NAME[eng]||eng}</span>`:'');
     b.addEventListener('click',()=>{
       S.segs=sc.segs.map(s=>({...s}));
       S.cast=migrateCast(copyCast(sc.cast));      // a copy: the library is not the live cast
       S.pages=[]; S.name=sc.name; S.showTrim=false;
       const was=S.set.engine;
-      S.set.engine=eng; sc.engine=eng;
+      if(eng){ S.set.engine=eng; sc.engine=eng; }      // unknown: leave the engine alone
       $('#importWrap').style.display='none'; $('#editWrap').style.display='block';
       refresh(); renderPages(); refreshSettingsUI();
       if(S.set.engine==='elevenlabs' && !S.elVoices.length && S.set.elKey) checkKey();
-      toast(was===eng ? `Loaded "${sc.name}".`
-                      : `Loaded "${sc.name}" — switched to ${ENGINE_NAME[eng]} voices.`, 4200);
+      toast(!eng || was===eng ? `Loaded "${sc.name}".`
+                              : `Loaded "${sc.name}" — switched to ${ENGINE_NAME[eng]} voices.`, 4200);
       /* scripts saved before r17 lost their voices; if the audio is still
          cached, put the right one back before he is charged for a new one */
       recoverVoices(true);
@@ -2886,7 +2959,10 @@ function applyState(d){
        value into the slot it belonged to, and give each saved script the engine
        it was set up under so loading it restores that engine rather than
        silently rewriting its voices against whatever is live */
-    S.scripts.forEach(sc=>{ migrateCast(sc.cast); if(!sc.engine) sc.engine = engineOfCast(sc.cast) || 'system'; });
+    /* never stamp 'system' as a guess: r17 did, and that wrong stamp is what
+       stopped recovery from ever running on the scripts that needed it */
+    S.scripts.forEach(sc=>{ migrateCast(sc.cast);
+      if(!sc.engine || (sc.engine==='system' && engineOfCast(sc.cast))) sc.engine = engineOfCast(sc.cast) || null; });
     if(d.paste) $('#paste').value=d.paste;
     if(d.segs?.length){
       S.segs=d.segs; SEQ=Math.max(...S.segs.map(s=>s.id||0))+1; S.cast=migrateCast(d.cast||{});

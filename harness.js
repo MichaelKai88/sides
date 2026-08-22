@@ -72,7 +72,8 @@ new vm.Script(js + '\n;globalThis.__T={Reader,advanceDecision,newCueState,S,P,se
                  + 'OA,OA_VOICES,usesClips,engineModel,castDir,englishVoices,hashKey,EL_MODEL,pickVoice,'
                  + 'cueLoopAction,finish,stripMarkdown,nameOf,advanceInto,cuesOf,markCue,gotoRows,gotoMatch,relTime,'
                  + 'pageCount,pageMove,step,insertAfterId,moveById,'
-                 + 'voiceOf,setVoiceOf,voicesReady,migrateCast,engineOfVoice,engineOfCast,copyCast,renderCast,syncCast};')
+                 + 'voiceOf,setVoiceOf,voicesReady,migrateCast,engineOfVoice,engineOfCast,copyCast,renderCast,syncCast,'
+                 + 'findCachedVoice,candidateTexts,recoveryCandidates,readerText};')
   .runInContext(sandbox);
 const T = sandbox.__T;
 
@@ -821,6 +822,76 @@ console.log('\nENGINES — one script on ElevenLabs and another on OpenAI must n
   ok('and is null when there is nothing to go on', T.engineOfCast({ A:{voices:{}} }) === null);
 
   S_.elVoices = [];
+}
+
+console.log('\nRECOVERY — the engine on the script is exactly what cannot be trusted');
+{
+  const S_ = T.S;
+
+  /* Reported by Michael on r17: he pressed "Find the voices I've already paid
+     for" and nothing happened. His TAI script had been saved by an older build
+     AFTER that build overwrote the OpenAI voice with a Windows one, so the only
+     voice left in it was a device voice. r17 inferred "this is a device script"
+     from that device voice - believing the corruption - and recovery, which
+     only ever searched the CURRENT engine, had nothing to search. */
+  ok('THE BUG: a device voice is not evidence of a device script',
+     T.engineOfCast({ CLIENT:{ voices:{ system:'Microsoft David - English (United States)' } } }) === null);
+  ok('a paid voice still is',
+     T.engineOfCast({ CLIENT:{ voices:{ system:'Microsoft David', openai:'onyx' } } }) === 'openai');
+
+  S_.segs = T.segsFromText('MICHAEL\nTell me what happened.\n\nCLIENT\nI froze. Completely.').segs;
+  S_.cast = { MICHAEL:{role:'me',voices:{}},
+              CLIENT:{role:'reader',voices:{system:'Microsoft David - English (United States)'},dir:''} };
+  S_.set.engine = 'system';                 // what r17 left him looking at
+  S_.set.oaModel = 'gpt-4o-mini-tts';
+  S_.elVoices = [];
+
+  const text = T.candidateTexts('CLIENT')[0];
+  ok('the character has a line to match on', !!text);
+
+  // the clip he already paid for, made under OpenAI
+  const paid = T.clipKey('onyx', text, 'gpt-4o-mini-tts', '');
+  const have = new Set([paid]);
+
+  const hit = T.findCachedVoice('CLIENT', have);
+  ok('THE BUG: recovery finds OpenAI audio while the engine reads Device',
+     !!hit && hit.engine === 'openai' && hit.voice === 'onyx');
+  ok('and reports the model it was made with', hit && hit.model === 'gpt-4o-mini-tts');
+
+  // a clip made with the OTHER OpenAI model must still be found
+  const have2 = new Set([T.clipKey('sage', text, 'tts-1', '')]);
+  const hit2 = T.findCachedVoice('CLIENT', have2);
+  ok('a tts-1 clip is found and names tts-1',
+     !!hit2 && hit2.voice === 'sage' && hit2.model === 'tts-1');
+
+  // a clip made when a Direction was set must still be found
+  S_.cast.CLIENT.dir = 'clipped and impatient';
+  const have3 = new Set([T.clipKey('coral', text, 'gpt-4o-mini-tts', 'clipped and impatient')]);
+  const hit3 = T.findCachedVoice('CLIENT', have3);
+  ok('a clip made with a direction is found and carries it',
+     !!hit3 && hit3.voice === 'coral' && hit3.dir === 'clipped and impatient');
+  S_.cast.CLIENT.dir = '';
+
+  // ElevenLabs, once its voices are loaded
+  S_.elVoices = [{voiceURI:'21m00Tcm4TlvDq8ikWAM',name:'Rachel',lang:'en'}];
+  const have4 = new Set([T.clipKey('21m00Tcm4TlvDq8ikWAM', text, T.EL_MODEL, '')]);
+  const hit4 = T.findCachedVoice('CLIENT', have4);
+  ok('an ElevenLabs clip is found too',
+     !!hit4 && hit4.engine === 'elevenlabs' && hit4.voice === '21m00Tcm4TlvDq8ikWAM');
+  S_.elVoices = [];
+
+  ok('an empty cache finds nothing',      T.findCachedVoice('CLIENT', new Set()) === null);
+  ok('an unrelated clip finds nothing',
+     T.findCachedVoice('CLIENT', new Set([T.clipKey('onyx','Some other line entirely.','gpt-4o-mini-tts','')])) === null);
+
+  /* the search must cover every engine, not just whichever is live - this is
+     the property that r17 lacked */
+  const engines = new Set(T.recoveryCandidates('CLIENT').map(c=>c.engine));
+  ok('the search covers OpenAI whatever the live engine is', engines.has('openai'));
+  ok('it covers both OpenAI models',
+     new Set(T.recoveryCandidates('CLIENT').filter(c=>c.engine==='openai').map(c=>c.model)).size === 2);
+  ok('every one of the 13 OpenAI voices is tried',
+     new Set(T.recoveryCandidates('CLIENT').filter(c=>c.engine==='openai').map(c=>c.voice)).size === 13);
 }
 
 console.log('\nENSURECLIP — the offline path must surface, not hang');
