@@ -71,7 +71,8 @@ new vm.Script(js + '\n;globalThis.__T={Reader,advanceDecision,newCueState,S,P,se
                  + 'Sync,stateBlob,applyState,newSyncCode,tidyCode,ensureClip,EL,'
                  + 'OA,OA_VOICES,usesClips,engineModel,castDir,englishVoices,hashKey,EL_MODEL,pickVoice,'
                  + 'cueLoopAction,finish,stripMarkdown,nameOf,advanceInto,cuesOf,markCue,gotoRows,gotoMatch,relTime,'
-                 + 'pageCount,pageMove,step,insertAfterId,moveById};')
+                 + 'pageCount,pageMove,step,insertAfterId,moveById,'
+                 + 'voiceOf,setVoiceOf,voicesReady,migrateCast,engineOfVoice,engineOfCast,copyCast,renderCast,syncCast};')
   .runInContext(sandbox);
 const T = sandbox.__T;
 
@@ -123,7 +124,7 @@ ok('short delivery still escapes',           D(st({spoke:true,spokeAt:500,lastLo
 
 // the exact shape that hung: a speech split in two, the second half never spoken
 S_.segs = T.segsFromText('MARA\nOne line here.\n\nMARA\nAnd the rest of it.\n\nDANIEL\nReply.').segs;
-S_.cast = { MARA:{role:'me',voice:''}, DANIEL:{role:'reader',voice:'v1'} };
+S_.cast = { MARA:{role:'me',voices:{}}, DANIEL:{role:'reader',voices:{system:'v1',openai:'nova',elevenlabs:'v1'}} };
 S_.set.dirs = true;
 const view  = T.mergedView();
 const maras = view.filter(s=>s.speaker==='MARA' && s.kind==='line').length;
@@ -481,7 +482,7 @@ console.log('\nINTERRUPTING A LINE — a superseded advance must not wake up and
   P_.on = true; P_.paused = false; P_.busy = false; P_.done = false; P_.mode = 'tap';
   P_.view = [{speaker:'A',kind:'line',text:'one'},{speaker:'A',kind:'line',text:'two'},{speaker:'A',kind:'line',text:'three'}];
   P_.cues = [0,1,2];
-  S_.cast = { A:{ role:'reader', voice:'v1' } };
+  S_.cast = { A:{ role:'reader', voices:{system:'v1',openai:'nova',elevenlabs:'v1'} } };
 
   T.advanceInto(0);
   await new Promise(r=>setTimeout(r, 420));          // past the 260ms lead-in
@@ -668,7 +669,7 @@ console.log('\nPAGING IN A TAKE — the tap must read the rest of the line befor
   const short = { ...tall, offsetHeight:120, classList:{ ...tall.classList, _s:new Set() } };
 
   S_.set.font = 52;                       // band 700, step ~630 -> the tall line is 4 screens
-  S_.cast = { A:{ role:'me', voice:'' } };
+  S_.cast = { A:{ role:'me', voices:{} } };
   P_.on = true; P_.paused = false; P_.busy = false; P_.done = false; P_.mode = 'tap';
   P_.view = [{speaker:'A',kind:'line',text:'a long teaching block'},
              {speaker:'A',kind:'line',text:'the next thing said'}];
@@ -745,6 +746,81 @@ console.log('\nEDITING — a line must be placeable where it is needed, not only
     if(keep.length !== 4 || new Set(keep.map(s=>s.id)).size !== 4) every = false;
   });
   ok('no sequence of moves ever loses or duplicates a line', every);
+}
+
+console.log('\nENGINES — one script on ElevenLabs and another on OpenAI must not fight');
+{
+  const S_ = T.S;
+  const OA_LIST = T.OA.voices();
+
+  /* THE BUG Michael reported: a character had ONE voice field shared by all
+     three engines, and renderCast revalidated it against whichever engine was
+     live. Setting up an ElevenLabs voice for one script therefore overwrote the
+     OpenAI voice on every other script - and, because the library kept the cast
+     by reference, inside the saved copies too. */
+  S_.set.engine = 'openai'; S_.set.oaModel = 'gpt-4o-mini-tts';
+  S_.segs = T.segsFromText('MICHAEL\nTell me.\n\nCLIENT\nI froze.').segs;
+  S_.cast = { MICHAEL:{role:'me',voices:{}}, CLIENT:{role:'reader',voices:{}} };
+  T.setVoiceOf('CLIENT', 'onyx');
+  ok('the OpenAI voice is set',            T.voiceOf('CLIENT') === 'onyx');
+
+  // switch to ElevenLabs with the key NOT checked - the realistic state
+  S_.elVoices = [];
+  S_.set.engine = 'elevenlabs';
+  ok('ElevenLabs voices are not ready yet', T.voicesReady() === false);
+  ok('so englishVoices falls back to the DEVICE list, not ElevenLabs',
+     T.englishVoices().every(v => !/^[A-Za-z0-9]{20}$/.test(v.voiceURI)));
+  T.renderCast();
+  ok('THE BUG: the OpenAI voice survives the switch', T.voiceOf('CLIENT','openai') === 'onyx');
+  ok('and ElevenLabs was not handed a device voice',  T.voiceOf('CLIENT','elevenlabs') === '');
+
+  // now the key checks out and a real ElevenLabs voice is chosen
+  S_.elVoices = [{voiceURI:'21m00Tcm4TlvDq8ikWAM',name:'Rachel',lang:'en'},
+                 {voiceURI:'AZnzlk1XvdvUeBnXmlld',name:'Domi',  lang:'en'}];
+  ok('now they are ready',                 T.voicesReady() === true);
+  T.setVoiceOf('CLIENT', 'AZnzlk1XvdvUeBnXmlld');
+  T.renderCast();
+  ok('the ElevenLabs voice sticks',        T.voiceOf('CLIENT') === 'AZnzlk1XvdvUeBnXmlld');
+
+  // ...and going back to OpenAI returns the ORIGINAL choice, so the clip that
+  // was already paid for is still the one that gets looked up
+  S_.set.engine = 'openai';
+  T.renderCast();
+  ok('switching back restores the paid-for OpenAI voice', T.voiceOf('CLIENT') === 'onyx');
+  ok('which means the clip key is unchanged, so nothing is re-billed',
+     T.clipKey('onyx', 'I froze.', T.engineModel(), '') ===
+     T.clipKey(T.voiceOf('CLIENT'), 'I froze.', T.engineModel(), ''));
+
+  S_.set.engine = 'elevenlabs';
+  T.renderCast();
+  ok('and forward again restores the ElevenLabs one', T.voiceOf('CLIENT') === 'AZnzlk1XvdvUeBnXmlld');
+
+  /* the library kept `cast: S.cast` by reference, so a saved script was not a
+     snapshot at all - editing the live cast rewrote every script that shared it */
+  const live = { CLIENT:{role:'reader',voices:{openai:'onyx'}} };
+  const snap = T.copyCast(live);
+  live.CLIENT.voices.openai = 'sage';
+  ok('THE BUG: a saved cast is a copy, not the live object',
+     snap.CLIENT.voices.openai === 'onyx' && snap.CLIENT !== live.CLIENT);
+
+  /* filing a legacy single voice into the slot it belonged to */
+  const old = { A:{voice:'nova'}, B:{voice:'21m00Tcm4TlvDq8ikWAM'},
+                C:{voice:'Microsoft David - English (United States)'}, D:{voice:''} };
+  T.migrateCast(old);
+  ok('an OpenAI id is filed under OpenAI',       old.A.voices.openai === 'nova');
+  ok('a 20-character id is filed under ElevenLabs',
+     old.B.voices.elevenlabs === '21m00Tcm4TlvDq8ikWAM');
+  ok('a voiceURI is filed under the device',
+     old.C.voices.system === 'Microsoft David - English (United States)');
+  ok('an empty voice files nowhere',             Object.keys(old.D.voices).length === 0);
+  ok('migrating twice changes nothing',
+     (T.migrateCast(old), old.A.voices.openai === 'nova' && !old.A.voices.system));
+
+  ok('a script’s engine can be inferred from the voices it kept',
+     T.engineOfCast({ A:{voices:{openai:'nova'}}, B:{voices:{openai:'sage'}} }) === 'openai');
+  ok('and is null when there is nothing to go on', T.engineOfCast({ A:{voices:{}} }) === null);
+
+  S_.elVoices = [];
 }
 
 console.log('\nENSURECLIP — the offline path must surface, not hang');

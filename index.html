@@ -82,6 +82,10 @@ h2.sec{font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;color:var(
   padding:7px 10px 7px 13px;font-size:13px;background:var(--raised)}
 .chip:hover{border-color:var(--brass-deep)}
 .chip b{font-weight:500}
+/* which engine this script is set up for - a script that reads in ElevenLabs
+   and one that reads in OpenAI are not interchangeable, so say so */
+.chip .eng{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--bone-faint);border:1px solid var(--edge);border-radius:2px;padding:1px 4px;margin-left:7px}
 .chip .x{color:var(--bone-faint);font-size:15px;line-height:1;padding:2px 3px}
 .chip .x:hover{color:var(--red)}
 
@@ -324,6 +328,9 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%;bac
     <h2 class="sec">Who's in the scene</h2>
     <p class="hint">Every character marked <b>Reader</b> gets spoken aloud in its own voice — as many as the scene has. Mark the one part you're playing as <b>You</b>, and the app waits for you on those lines instead of reading them. <b>Skip</b> leaves a character out entirely. If the script spells one character two ways, merge them with “Same as”.</p>
     <div id="castList"></div>
+    <div class="row" id="recoverRow" style="display:none;margin-top:16px">
+      <button class="btn ghost" id="recoverVoices">Find the voices I've already paid for</button>
+    </div>
     <p class="hint" id="voiceNote" style="margin-top:18px"></p>
   </section>
 
@@ -609,11 +616,12 @@ const Sync = {
 
 /* bump on every deploy - it is the only way to tell a stale cached app from a
    fix that did not work, and we have already lost a round to that ambiguity */
-const BUILD = 'r16 · 2026-08-21';
+const BUILD = 'r17 · 2026-08-21';
 
 const DEFAULTS = { mode:'cue', silence:1600, sens:5, speed:46, font:52, focus:38,
   mirror:false, names:true, dirs:true, engine:'system', elKey:'',
   oaKey:'', oaModel:'gpt-4o-mini-tts', rate:100, vol:85, count:3, device:'' };
+const ENGINE_NAME = { system:'Device', elevenlabs:'ElevenLabs', openai:'OpenAI' };
 const S = { segs:[], cast:{}, set:{...DEFAULTS}, voices:[], step:0, pages:[], scripts:[], name:'', showTrim:false, fileHint:'', elVoices:[],
   mark:null };   // where the last take was left off
 let SEQ = 1;
@@ -766,6 +774,105 @@ function usesClips(){ return S.set.engine==='elevenlabs' || S.set.engine==='open
 function pickVoice(current, list){
   if(!list.length) return current;
   return list.some(v=>v.voiceURI===current) ? current : list[0].voiceURI;
+}
+
+/* ---------- one voice per character PER ENGINE ----------
+   A character used to have a single `voice` field shared by all three engines,
+   and pickVoice above overwrote it against whichever engine was live. Choosing
+   an ElevenLabs voice therefore destroyed the OpenAI choice outright - not
+   shadowed, gone, with no record of what it had been. Each engine now keeps its
+   own slot, so switching back and forth is lossless and reversible. */
+function voiceOf(name, engine){
+  const c = S.cast[name];
+  return (c && c.voices && c.voices[engine || S.set.engine]) || '';
+}
+function setVoiceOf(name, id, engine){
+  const c = S.cast[name]; if(!c) return;
+  (c.voices || (c.voices = {}))[engine || S.set.engine] = id;
+}
+
+/* englishVoices() falls back to this device's system voices whenever ElevenLabs
+   is selected but the key has not been checked yet. Revalidating a paid voice
+   against THAT list is what turned a character into "Microsoft David" - the
+   list was real, it just belonged to a different engine. Never revalidate
+   unless the list on screen actually is the current engine's. */
+function voicesReady(){
+  if(S.set.engine === 'openai')     return true;           // hard-coded, always present
+  if(S.set.engine === 'elevenlabs') return S.elVoices.length > 0;
+  return S.voices.length > 0;
+}
+
+/* ElevenLabs ids are 20 alphanumerics; OpenAI ids are words from a fixed list;
+   a system voice is a voiceURI, which is neither. Used only to file a legacy
+   single `voice` into the right slot once. */
+const EL_ID = /^[A-Za-z0-9]{20}$/;
+function engineOfVoice(id){
+  if(!id) return null;
+  if(OA_VOICES.some(v => v[0] === id)) return 'openai';
+  return EL_ID.test(id) ? 'elevenlabs' : 'system';
+}
+function migrateCast(cast){
+  Object.values(cast || {}).forEach(c => {
+    if(c.voices) return;
+    c.voices = {};
+    const e = engineOfVoice(c.voice);
+    if(e) c.voices[e] = c.voice;
+  });
+  return cast;
+}
+/* Which engine a saved script was set up under, when it predates the field. */
+function engineOfCast(cast){
+  const hits = {};
+  Object.values(cast || {}).forEach(c => Object.keys(c.voices || {})
+    .forEach(e => { if(c.voices[e]) hits[e] = (hits[e] || 0) + 1; }));
+  return Object.keys(hits).sort((a,b) => hits[b] - hits[a])[0] || null;
+}
+/* ---------- recovering a voice that was already overwritten ----------
+   The builds before this one destroyed the other engine's voice on every switch,
+   so scripts set up before r17 have already lost theirs, and nobody can be
+   expected to remember which of thirteen OpenAI voices a character had. Picking
+   the wrong one means paying to generate the whole script a second time.
+
+   But the clips that were paid for are still in the cache, keyed by
+   hash(model|voice|text) - so the voice is recoverable by asking the cache which
+   candidate it already holds audio for. Thirteen local reads, no network, no
+   cost. It never overrides a voice that already has its audio. */
+async function recoverVoice(name){
+  if(!usesClips() || !voicesReady()) return null;
+  const list = englishVoices(); if(!list.length) return null;
+  const l = mergedView().find(s => s.kind === 'line' && s.speaker === name);
+  if(!l) return null;
+  const clean = readerText(l.text); if(!clean) return null;
+  const model = engineModel(), dir = castDir(name), cur = voiceOf(name);
+  // whatever is selected already has its audio - leave it alone
+  if(cur && await AudioCache.get(clipKey(cur, clean, model, dir))) return null;
+  for(const v of list){
+    if(v.voiceURI === cur) continue;
+    if(await AudioCache.get(clipKey(v.voiceURI, clean, model, dir))) return v.voiceURI;
+  }
+  return null;
+}
+async function recoverVoices(quiet){
+  if(!usesClips() || !voicesReady()) return 0;
+  let n = 0;
+  for(const name of Object.keys(S.cast)){
+    if(S.cast[name].role !== 'reader') continue;
+    const found = await recoverVoice(name);
+    if(found){ setVoiceOf(name, found); n++; }
+  }
+  if(n){ renderCast(); save(); }
+  if(!quiet) toast(n ? `Matched ${n} ${n===1?'character':'characters'} to audio already paid for.`
+                     : 'No cached audio matched another voice — nothing to recover.', 4800);
+  return n;
+}
+
+/* The library used to keep `cast: S.cast` by REFERENCE, so every saved script
+   shared one object with the live one - editing the cast rewrote all of them,
+   including scripts that were never opened. Copies, always. */
+function copyCast(cast){
+  const out = {};
+  Object.keys(cast || {}).forEach(n => { out[n] = {...cast[n], voices:{...(cast[n].voices || {})}}; });
+  return out;
 }
 function engineModel(){ return S.set.engine==='openai' ? S.set.oaModel : EL_MODEL; }
 /* a per-character delivery note, folded into the clip key so changing it regenerates */
@@ -1415,9 +1522,14 @@ function syncCast(){
   const names = speakers().map(s=>s[0]);
   const fresh = !Object.keys(S.cast).length;
   const mine = fresh ? guessMe(names) : null;
-  names.forEach((n,i)=>{ keep[n]=S.cast[n]||{role:(fresh ? n===mine : i===0)?'me':'reader',voice:''}; });
+  names.forEach((n,i)=>{ keep[n]=S.cast[n]||{role:(fresh ? n===mine : i===0)?'me':'reader',voices:{}};
+    if(!keep[n].voices) migrateCast({x:keep[n]}); });
+  /* only hand out a default when the list really is this engine's, or a reader
+     with no ElevenLabs voice yet gets given a system one and it looks chosen */
   const ev=englishVoices(); let vi=0;
-  Object.keys(keep).forEach(n=>{ if(keep[n].role==='reader'&&!keep[n].voice&&ev.length){ keep[n].voice=ev[vi%ev.length].voiceURI; vi++; } });
+  if(voicesReady()) Object.keys(keep).forEach(n=>{
+    if(keep[n].role==='reader' && !keep[n].voices[S.set.engine] && ev.length){
+      keep[n].voices[S.set.engine]=ev[vi%ev.length].voiceURI; vi++; } });
   S.cast=keep;
 }
 
@@ -1442,23 +1554,28 @@ function renderCast(){
     const extra=document.createElement('div'); extra.className='cast-extra';
     if(c.role==='reader'){
       const lab=document.createElement('label'); lab.textContent='Voice';
-      const fixed = pickVoice(c.voice, ev);
-      if(fixed !== c.voice){ c.voice = fixed; save(); }
+      /* revalidate only against this engine's own list - see voicesReady() */
+      if(voicesReady()){
+        const fixed = pickVoice(voiceOf(name), ev);
+        if(fixed !== voiceOf(name)){ setVoiceOf(name, fixed); save(); }
+      }
+      const mine = voiceOf(name);
       const sel=document.createElement('select');
       if(!ev.length){ const o=document.createElement('option'); o.textContent='No voices on this device'; sel.appendChild(o); sel.disabled=true; }
       ev.forEach(v=>{ const o=document.createElement('option'); o.value=v.voiceURI; o.textContent=`${v.name} (${v.lang})`;
-        if(c.voice===v.voiceURI) o.selected=true; sel.appendChild(o); });
-      sel.addEventListener('change',()=>{ c.voice=sel.value; save(); });
+        if(mine===v.voiceURI) o.selected=true; sel.appendChild(o); });
+      sel.addEventListener('change',()=>{ setVoiceOf(name, sel.value); save(); });
       const test=document.createElement('button'); test.className='btn ghost'; test.textContent='Hear it';
       test.addEventListener('click', async ()=>{
         const l=S.segs.find(s=>s.speaker===name&&s.kind==='line'&&!s.out);
         const line = l?l.text:`This is ${name}.`;
+        const v = voiceOf(name);
         if(usesClips()){
           test.textContent='…';
-          try{ await ensureClip(c.voice, line, castDir(name)); }catch(e){ toast(e.message,4500); }
+          try{ await ensureClip(v, line, castDir(name)); }catch(e){ toast(e.message,4500); }
           test.textContent='Hear it';
         }
-        Clip.unlock(); Reader.say(line, c.voice, castDir(name));
+        Clip.unlock(); Reader.say(line, v, castDir(name));
       });
       extra.append(lab,sel,test);
       /* a plain text field, deliberately - see how it reads before building more */
@@ -1491,6 +1608,8 @@ function renderCast(){
     if(extra.children.length) card.appendChild(extra);
     box.appendChild(card);
   });
+  const row=$('#recoverRow');
+  if(row) row.style.display = (usesClips() && list.some(([n])=>S.cast[n]?.role==='reader')) ? 'flex' : 'none';
   const n=englishVoices().length;
   $('#voiceNote').textContent =
     S.set.engine==='openai'
@@ -1617,11 +1736,26 @@ function renderLib(){
   if(!S.scripts.length) return;
   S.scripts.forEach((sc,i)=>{
     const c=document.createElement('div'); c.className='chip';
-    const b=document.createElement('button'); b.innerHTML=`<b>${esc(sc.name)}</b>`;
+    /* the engine is part of the script, not a global mood - one script wants
+       ElevenLabs and the next wants OpenAI, and switching between them must not
+       cost anything or forget anything */
+    const eng = sc.engine || engineOfCast(sc.cast) || 'system';
+    const b=document.createElement('button');
+    b.innerHTML=`<b>${esc(sc.name)}</b><span class="eng">${ENGINE_NAME[eng]||eng}</span>`;
     b.addEventListener('click',()=>{
-      S.segs=sc.segs.map(s=>({...s})); S.cast=sc.cast||{}; S.pages=[]; S.name=sc.name; S.showTrim=false;
+      S.segs=sc.segs.map(s=>({...s}));
+      S.cast=migrateCast(copyCast(sc.cast));      // a copy: the library is not the live cast
+      S.pages=[]; S.name=sc.name; S.showTrim=false;
+      const was=S.set.engine;
+      S.set.engine=eng; sc.engine=eng;
       $('#importWrap').style.display='none'; $('#editWrap').style.display='block';
-      refresh(); renderPages(); toast(`Loaded "${sc.name}". Page images aren't kept — re-import the PDF if you need them.`,4200);
+      refresh(); renderPages(); refreshSettingsUI();
+      if(S.set.engine==='elevenlabs' && !S.elVoices.length && S.set.elKey) checkKey();
+      toast(was===eng ? `Loaded "${sc.name}".`
+                      : `Loaded "${sc.name}" — switched to ${ENGINE_NAME[eng]} voices.`, 4200);
+      /* scripts saved before r17 lost their voices; if the audio is still
+         cached, put the right one back before he is charged for a new one */
+      recoverVoices(true);
     });
     const x=document.createElement('button'); x.className='x'; x.innerHTML='&times;'; x.title='Delete';
     x.addEventListener('click',()=>{ S.scripts.splice(i,1); renderLib(); save(); });
@@ -1631,7 +1765,8 @@ function renderLib(){
 $('#saveScript').addEventListener('click',()=>{
   const name=prompt('Name this script', S.name||'Untitled');
   if(!name||!name.trim()) return;
-  const rec={name:name.trim(), segs:S.segs.map(s=>({...s})), cast:S.cast, at:Date.now()};
+  const rec={name:name.trim(), segs:S.segs.map(s=>({...s})), cast:copyCast(S.cast),
+             engine:S.set.engine, at:Date.now()};
   const k=S.scripts.findIndex(s=>s.name===rec.name);
   if(k>=0) S.scripts[k]=rec; else S.scripts.unshift(rec);
   S.scripts=S.scripts.slice(0,12);
@@ -1706,8 +1841,19 @@ settingBind.forEach(([sel,key,valSel,fmt])=>{
 $('#setMode').addEventListener('change',()=>{ S.set.mode=$('#setMode').value; refreshSettingsUI(); save(); });
 $('#setDevice').addEventListener('change',()=>{ S.set.device=$('#setDevice').value; save(); });
 $('#setEngine').addEventListener('change',()=>{
-  S.set.engine=$('#setEngine').value; refreshSettingsUI(); renderCast(); save();
+  S.set.engine=$('#setEngine').value; refreshSettingsUI(); renderCast(); renderLib(); save();
   if(S.set.engine==='elevenlabs' && !S.elVoices.length && S.set.elKey) checkKey();
+  /* the open script is a snapshot in the library, not a live link to it - say so
+     rather than letting the next load quietly revert the engine */
+  const sc = S.scripts.find(x=>x.name===S.name);
+  if(sc && sc.engine && sc.engine!==S.set.engine)
+    toast(`"${sc.name}" is saved as ${ENGINE_NAME[sc.engine]}. Save this script to keep ${ENGINE_NAME[S.set.engine]}.`, 5200);
+  recoverVoices(true);
+});
+$('#recoverVoices').addEventListener('click', async ()=>{
+  const b=$('#recoverVoices'), was=b.textContent;
+  b.disabled=true; b.textContent='Checking the cache…';
+  try{ await recoverVoices(false); } finally { b.disabled=false; b.textContent=was; }
 });
 $('#setKey').addEventListener('change',()=>{ S.set.elKey=$('#setKey').value.trim(); save(); });
 $('#checkKey').addEventListener('click', checkKey);
@@ -1846,7 +1992,7 @@ async function prepareReader(){
 
   const todo = [];
   for(const l of lines){
-    const v = S.cast[l.speaker]?.voice; if(!v) continue;
+    const v = voiceOf(l.speaker); if(!v) continue;
     const clean = readerText(l.text); if(!clean) continue;
     const dir = castDir(l.speaker);
     if(!(await AudioCache.get(clipKey(v, clean, engineModel(), dir)))) todo.push({ v, clean, dir });
@@ -2413,7 +2559,7 @@ async function advanceInto(i, atEnd=false){
     try{
       await new Promise(r=>setTimeout(r,260));
       if(stale()) return;
-      const r = await Reader.say(seg.text, S.cast[seg.speaker]?.voice, castDir(seg.speaker));
+      const r = await Reader.say(seg.text, voiceOf(seg.speaker), castDir(seg.speaker));
       if(stale()) return;
       // an aborted clip means we were stopped on purpose - not a reader failure
       if(!r.ok && !r.aborted){
@@ -2736,9 +2882,14 @@ function applyState(d){
   if(d){
     S.set={...DEFAULTS,...(d.set||{})};
     S.scripts=d.scripts||[]; S.name=d.name||''; S.mark=d.mark||null;
+    /* one shared `voice` per character became one slot per engine; file the old
+       value into the slot it belonged to, and give each saved script the engine
+       it was set up under so loading it restores that engine rather than
+       silently rewriting its voices against whatever is live */
+    S.scripts.forEach(sc=>{ migrateCast(sc.cast); if(!sc.engine) sc.engine = engineOfCast(sc.cast) || 'system'; });
     if(d.paste) $('#paste').value=d.paste;
     if(d.segs?.length){
-      S.segs=d.segs; SEQ=Math.max(...S.segs.map(s=>s.id||0))+1; S.cast=d.cast||{};
+      S.segs=d.segs; SEQ=Math.max(...S.segs.map(s=>s.id||0))+1; S.cast=migrateCast(d.cast||{});
       $('#importWrap').style.display='none'; $('#editWrap').style.display='block';
       $('#editHint').textContent='Reassign a speaker with the dropdown, edit text inline, split a line with ⁄, delete anything that isn\u2019t dialogue.';
       renderPages();
