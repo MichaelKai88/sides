@@ -1,0 +1,55 @@
+# Supabase on the free plan pauses any project that goes ~7 days without a real
+# database query. A paused project does not lose data, but restoring it needs a
+# GitHub sign-in to the Supabase dashboard and several minutes of waiting - not
+# something to discover on an iPad before a self-tape.
+#
+# This runs a genuine query every day: sync_pull with a code that matches no row.
+# It reads, returns [], writes nothing. The publishable key below is the same one
+# that already ships inside index.html in this public repo, so it is not a secret
+# and does not belong in Actions secrets.
+name: keepalive
+
+on:
+  schedule:
+    - cron: '0 12 * * *'      # daily, 12:00 UTC. Seven runs may be missed before a pause.
+  workflow_dispatch:
+
+permissions:
+  contents: write             # only for the 60-day commit below
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Query the database
+        run: |
+          code=$(curl -sS -o /tmp/body -w '%{http_code}' \
+            -X POST 'https://goyuyxbzllrqkwicknro.supabase.co/rest/v1/rpc/sync_pull' \
+            -H 'apikey: sb_publishable_w05D5w7A2pa7Y2jp26CCMw_LkIvIyXV' \
+            -H 'Authorization: Bearer sb_publishable_w05D5w7A2pa7Y2jp26CCMw_LkIvIyXV' \
+            -H 'Content-Type: application/json' \
+            -d '{"p_code":"keepalive-noop"}')
+          echo "HTTP $code"; cat /tmp/body; echo
+          # A paused or resuming project answers 540/544, and a database that is up
+          # but has lost its schema cache answers 404 PGRST202. Fail on anything but
+          # 200 so the failure mail arrives while there is still time to act.
+          [ "$code" = "200" ] || { echo "::error::Supabase did not answer 200 - project may be paused"; exit 1; }
+
+      # GitHub disables scheduled workflows in a public repo after 60 days with no
+      # new commit; workflow runs themselves do not count. This pushes an empty
+      # commit only once the repo has been quiet for 45 days, so it stays silent
+      # through any period of actual work.
+      - name: Keep the schedule itself alive
+        uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Nudge the repo if it has been quiet 45 days
+        run: |
+          last=$(git log -1 --format=%ct)
+          age=$(( ( $(date +%s) - last ) / 86400 ))
+          echo "last commit was $age days ago"
+          if [ "$age" -ge 45 ]; then
+            git config user.name  'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit --allow-empty -m 'Keep the scheduled keepalive workflow enabled'
+            git push
+          fi
