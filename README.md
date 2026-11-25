@@ -17,8 +17,10 @@ live reader.
 - **Waits for you.** Hands-free mode listens and moves on when you stop talking.
   There is also tap-to-advance and continuous scroll.
 - **Starts anywhere.** Resume where you left off, or jump to any line.
-- **Follows you between devices.** A sync code carries scripts, settings and
-  generated audio between, say, a laptop and an iPad.
+- **Optional cross-device sync.** A sync code can carry scripts, settings and
+  generated audio between, say, a laptop and an iPad. It talks to a Supabase
+  project configured at the top of `index.html`; point it at your own to use
+  it. Everything else works with no account and no network.
 
 ## Running it
 
