@@ -17,10 +17,13 @@ live reader.
 - **Waits for you.** Hands-free mode listens and moves on when you stop talking.
   There is also tap-to-advance and continuous scroll.
 - **Starts anywhere.** Resume where you left off, or jump to any line.
-- **Optional cross-device sync.** A sync code can carry scripts, settings and
-  generated audio between, say, a laptop and an iPad. It talks to a Supabase
-  project configured at the top of `index.html`; point it at your own to use
-  it. Everything else works with no account and no network.
+- **Follows you between devices.** An optional sync code carries scripts,
+  settings and generated audio between, say, a laptop and an iPad. Everything
+  else works with no account and no network at all.
+
+The server side is one table and two `SECURITY DEFINER` functions — see
+[`supabase/schema.sql`](supabase/schema.sql). The key that ships in `index.html`
+cannot read that table; the sync code is the secret.
 
 ## Running it
 
