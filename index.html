@@ -692,7 +692,7 @@ const Sync = {
 
 /* bump on every deploy - it is the only way to tell a stale cached app from a
    fix that did not work, and we have already lost a round to that ambiguity */
-const BUILD = 'r19 · 2026-08-22';
+const BUILD = 'r20 · 2026-11-24';
 
 const DEFAULTS = { mode:'cue', silence:1600, sens:5, speed:46, font:52, focus:38,
   mirror:false, names:true, dirs:true, engine:'system', elKey:'',
@@ -1649,7 +1649,8 @@ function renderLines(){
 
   resizeAll();
   const nl=S.segs.filter(s=>s.kind==='line'&&!s.out).length;
-  $('#lineCount').textContent=`${nl} spoken ${nl===1?'line':'lines'} · ${speakers().length} characters`;
+  const nc = speakers().length;
+  $('#lineCount').textContent=`${nl} spoken ${nl===1?'line':'lines'} · ${nc} ${nc===1?'character':'characters'}`;
   const trimmed=S.segs.filter(s=>s.out).length;
   requestAnimationFrame(autosizeAll);
   $('#trimBanner').style.display=trimmed?'flex':'none';
@@ -1800,7 +1801,11 @@ function afterParse(result, label){
     + `</span>`;
   const b=document.createElement('button'); b.className='btn ghost'; b.textContent='Change in Cast';
   b.addEventListener('click',()=>goStep(1)); $('#roleNote').appendChild(b);
-  toast(`Read ${spoken} spoken lines across ${S.pages.length||1} ${S.pages.length===1?'page':'pages'}.`);
+  /* pasted text and the sample have no pages at all, and `0 || 1` with a
+     `=== 1` test read "across 1 pages" - the first thing a new visitor saw */
+  const np = S.pages.length;
+  toast(`Read ${spoken} spoken ${spoken===1?'line':'lines'}`
+      + (np ? ` across ${np} ${np===1?'page':'pages'}.` : '.'));
 }
 
 async function importPdf(file){
